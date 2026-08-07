@@ -23,6 +23,7 @@ from .base import (
     TransportError,
     TrayEntry,
     TrayResponse,
+    TwoFactorRequiredError,
     UserNotFoundError,
 )
 from .fixture import FixtureTransport
@@ -38,6 +39,7 @@ __all__ = [
     "LoginRequiredError",
     "PleaseWaitError",
     "PrivateAccountError",
+    "TwoFactorRequiredError",
     "ProxyBlockedError",
     "RateLimitedError",
     "StoryItem",

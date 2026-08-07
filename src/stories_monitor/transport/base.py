@@ -28,6 +28,14 @@ class LoginRequiredError(TransportError):
     """Session rejected. Warden may attempt exactly one re-login."""
 
 
+class TwoFactorRequiredError(TransportError):
+    """Account has 2FA enabled and needs a verification code.
+
+    Instagram often surfaces this as a plain bad-password error, so a login
+    failure on a 2FA account is easy to misdiagnose (SPEC section 4).
+    """
+
+
 class FeedbackRequiredError(TransportError):
     """Action blocked. Back off; stop writes for this account."""
 

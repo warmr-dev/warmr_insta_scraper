@@ -98,6 +98,82 @@ def import_targets(csv_path: str, dry_run: bool) -> None:
     click.echo(report.render())
 
 
+@cli.command("seed-worker")
+@click.option("--username", default=None, help="Defaults to IG_WORKER_USERNAME")
+@click.option("--password", default=None, help="Defaults to IG_WORKER_PASSWORD")
+@click.option("--proxy-url", default=None, help="Defaults to IG_WORKER_PROXY_URL")
+@click.option("--shard-id", default=0, show_default=True)
+@click.option(
+    "--status",
+    default="warming",
+    show_default=True,
+    type=click.Choice(["warming", "active", "reserve"]),
+)
+@click.option(
+    "--force-device",
+    is_flag=True,
+    help="Regenerate device settings / rotate proxy. SPEC section 8 forbids this "
+    "outside recovery - it burns accounts.",
+)
+def seed_worker_cmd(
+    username: str | None,
+    password: str | None,
+    proxy_url: str | None,
+    shard_id: int,
+    status: str,
+    force_device: bool,
+) -> None:
+    """Insert a worker account (offline - no Instagram call)."""
+    from .seed import seed_worker
+
+    settings = get_settings()
+    report = seed_worker(
+        username=username or settings.ig_worker_username,
+        password=password or settings.ig_worker_password,
+        proxy_url=proxy_url or settings.ig_worker_proxy_url,
+        shard_id=shard_id,
+        status=status,
+        force_device=force_device,
+    )
+    click.echo(json.dumps(report, indent=2, default=str))
+
+
+@cli.command("login-test")
+@click.option("--username", default=None, help="Worker account username")
+@click.option(
+    "--verification-code",
+    default=None,
+    help="6-digit code from the authenticator app, if the account has 2FA. "
+    "Read it immediately before running - codes expire in ~30s.",
+)
+@click.confirmation_option(
+    prompt="This performs a REAL Instagram login. Repeated logins are the strongest "
+    "ban signal (SPEC section 8). Continue?"
+)
+def login_test(username: str | None, verification_code: str | None) -> None:
+    """One real login through the account's bound proxy, then stop.
+
+    Deliberately minimal: it logs in, persists the session so no further login
+    is needed, and makes no other API call. It never calls media/seen/ or any
+    write endpoint (SPEC section 11).
+    """
+    from .smoke import run_login_test
+
+    def ask_for_code() -> str:
+        """Prompt only once everything slow is done, so the code stays fresh."""
+        click.echo("")
+        click.echo("This account has 2FA. Open your authenticator app now.")
+        click.echo("Everything else is ready - the code is used immediately.")
+        return click.prompt("6-digit code", type=str).strip()
+
+    result = run_login_test(
+        username or get_settings().ig_worker_username or None,
+        verification_code=verification_code,
+        code_prompt=ask_for_code,
+    )
+    click.echo(json.dumps(result, indent=2, default=str))
+
+
 @cli.command("probe-tray")
 @click.option("--username", default=None, help="Worker account username")
 @click.option("--from-env", is_flag=True, help="Read credentials from the environment")
