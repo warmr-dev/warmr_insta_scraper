@@ -30,6 +30,7 @@ from .base import (
     TransportError,
     TrayEntry,
     TrayResponse,
+    TwoFactorRequiredError,
     UserNotFoundError,
 )
 
@@ -69,6 +70,9 @@ _IG_PRIVATE_ACCOUNT = _exc("PrivateAccount")
 _IG_PRIVATE_ERROR = _exc("PrivateError")
 _IG_USER_NOT_FOUND = _exc("UserNotFound")
 _IG_PROXY_BLOCKED = _exc("ProxyAddressIsBlocked")
+_IG_TWO_FACTOR = _exc("TwoFactorRequired")
+_IG_BAD_PASSWORD = _exc("BadPassword")
+_IG_BAD_CREDENTIALS = _exc("BadCredentials")
 
 # Ordered most-specific first: the first isinstance hit wins.
 _ERROR_MAP: tuple[tuple[type[BaseException], type[TransportError]], ...] = (
@@ -82,6 +86,12 @@ _ERROR_MAP: tuple[tuple[type[BaseException], type[TransportError]], ...] = (
     (_IG_RATE_LIMIT, RateLimitedError),
     (_IG_PROXY_BLOCKED, ProxyBlockedError),
     (_IG_USER_NOT_FOUND, UserNotFoundError),
+    # These three subclass PrivateError, so they MUST precede it or a bad
+    # password gets mislabelled "private account" and a 2FA prompt gets
+    # mislabelled "bad password".
+    (_IG_TWO_FACTOR, TwoFactorRequiredError),
+    (_IG_BAD_PASSWORD, LoginRequiredError),
+    (_IG_BAD_CREDENTIALS, LoginRequiredError),
     (_IG_PRIVATE_ACCOUNT, PrivateAccountError),
     (_IG_PRIVATE_ERROR, PrivateAccountError),
 )
@@ -170,9 +180,37 @@ class LiveTransport(InstagramTransport):
 
     @translate_errors
     def login(self, username: str, password: str, **kwargs: Any) -> dict[str, Any]:
+        """Authenticate and return the session settings to persist.
+
+        instagrapi runs `login_flow()` after the credentials are accepted, which
+        warms several feeds. Those calls can fail on a brand-new account (a 467
+        on `reels_tray/` is common) even though authentication SUCCEEDED. Losing
+        a valid session to that would force another login, and repeated logins
+        are the strongest ban signal (SPEC section 8) - so if we hold an auth
+        token, we keep the session and let the caller proceed.
+        """
         self.username = username
-        self.client.login(username, password, **kwargs)
+        try:
+            self.client.login(username, password, **kwargs)
+        except Exception:
+            if not self._is_authenticated():
+                raise
+            log.warning(
+                "login_flow_incomplete",
+                username=username,
+                detail="authenticated, but a post-login warm-up call failed; "
+                "keeping the session rather than logging in again",
+            )
         return self.client.get_settings()
+
+    def _is_authenticated(self) -> bool:
+        """True when the client holds a usable authorization token."""
+        try:
+            if self.client.authorization_data.get("sessionid"):
+                return True
+        except Exception:  # noqa: BLE001 - shape varies across versions
+            pass
+        return bool(self.client.cookie_dict.get("sessionid"))
 
     @translate_errors
     def load_session(self, session_json: dict[str, Any]) -> None:

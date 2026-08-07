@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     poller_lag_alert_sec: int = 300
     monthly_budget_usd: float = 650.0
 
+    # --- Worker seeding ---
+    # Source values for `stories seed-worker`. Once seeded, the database is the
+    # authority: the password lives encrypted in worker_accounts and these are
+    # no longer read.
+    ig_worker_username: str = ""
+    ig_worker_password: str = ""
+    ig_worker_proxy_url: str = ""
+    # TOTP secret ("setup key") for a 2FA account. With it, logins are automatic;
+    # without it a human must supply a fresh 6-digit code for every login, which
+    # the follower and warden cannot do unattended.
+    ig_worker_totp_secret: str = ""
+
     # --- Sharding ---
     # Instagram caps following at 7,500/account. Leave headroom.
     max_follows_per_account: int = 7000
