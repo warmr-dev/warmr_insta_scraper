@@ -1,0 +1,6 @@
+{
+  "__error__": "login_required",
+  "status": "fail",
+  "message": "login_required: Please wait a few minutes before you try again.",
+  "spam": false
+}

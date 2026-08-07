@@ -1,0 +1,136 @@
+{
+  "tray": [
+    {
+      "id": "1234567890",
+      "latest_reel_media": 1786095000,
+      "seen": 0,
+      "expiring_at": 1786181400,
+      "media_count": 2,
+      "prefetch_count": 0,
+      "has_besties_media": false,
+      "ranked_position": 0,
+      "seen_ranked_position": 0,
+      "muted": false,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 1234567890,
+        "pk_id": "1234567890",
+        "username": "acme_dental",
+        "full_name": "Acme Dental Clinic",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "1234567890_1234567890",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/acme_dental_profile.jpg"
+      }
+    },
+    {
+      "id": "highlight:17912345678901234",
+      "latest_reel_media": 1785896800,
+      "seen": 0,
+      "expiring_at": 0,
+      "media_count": 5,
+      "reel_type": "highlight_reel",
+      "title": "Before & After",
+      "user": {
+        "pk": 1234567890,
+        "pk_id": "1234567890",
+        "username": "acme_dental",
+        "full_name": "Acme Dental Clinic",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "1234567890_1234567890",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/acme_dental_profile.jpg"
+      },
+      "cover_media": {
+        "cropped_image_version": {
+          "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/highlight_17912345678901234_cover.jpg",
+          "width": 150,
+          "height": 150
+        }
+      }
+    },
+    {
+      "id": "2345678901",
+      "latest_reel_media": 1786091400,
+      "seen": 1786091800,
+      "expiring_at": 1786177800,
+      "media_count": 3,
+      "prefetch_count": 0,
+      "has_besties_media": false,
+      "ranked_position": 0,
+      "seen_ranked_position": 0,
+      "muted": false,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 2345678901,
+        "pk_id": "2345678901",
+        "username": "north_cafe",
+        "full_name": "North Cafe",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "2345678901_2345678901",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/north_cafe_profile.jpg"
+      }
+    },
+    {
+      "id": "highlight:17998765432109876",
+      "latest_reel_media": 1785896800,
+      "seen": 0,
+      "expiring_at": 0,
+      "media_count": 5,
+      "reel_type": "highlight_reel",
+      "title": "Reviews",
+      "user": {
+        "pk": 2345678901,
+        "pk_id": "2345678901",
+        "username": "north_cafe",
+        "full_name": "North Cafe",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "2345678901_2345678901",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/north_cafe_profile.jpg"
+      },
+      "cover_media": {
+        "cropped_image_version": {
+          "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/highlight_17912345678901234_cover.jpg",
+          "width": 150,
+          "height": 150
+        }
+      }
+    },
+    {
+      "id": "3456789012",
+      "latest_reel_media": 1786096500,
+      "seen": 0,
+      "expiring_at": 1786182900,
+      "media_count": 1,
+      "prefetch_count": 0,
+      "has_besties_media": false,
+      "ranked_position": 0,
+      "seen_ranked_position": 0,
+      "muted": false,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 3456789012,
+        "pk_id": "3456789012",
+        "username": "vega_fitness",
+        "full_name": "Vega Fitness Studio",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "3456789012_3456789012",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/vega_fitness_profile.jpg"
+      }
+    }
+  ],
+  "status": "ok",
+  "story_ranking_token": "0.0-fixture",
+  "face_filter_nux_version": 0,
+  "has_new_nux_story": false,
+  "sticker_version": 28
+}

@@ -1,0 +1,88 @@
+{
+  "reels": {
+    "2345678901": {
+      "id": 2345678901,
+      "latest_reel_media": 1786091400,
+      "expiring_at": 1786177800,
+      "seen": 0,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 2345678901,
+        "pk_id": "2345678901",
+        "username": "north_cafe",
+        "full_name": "North_Cafe Co",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "2345678901_2345678901",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/north_cafe_profile.jpg"
+      },
+      "items": [
+        {
+          "pk": "3222000000000000002",
+          "id": "3222000000000000002_2345678901",
+          "taken_at": 1786091400,
+          "expiring_at": 1786177800,
+          "media_type": 2,
+          "code": "C2Vd",
+          "device_timestamp": 1786091400000,
+          "original_width": 1080,
+          "original_height": 1920,
+          "user": {
+            "pk": 2345678901,
+            "pk_id": "2345678901",
+            "username": "user_2345678901",
+            "full_name": "User 2345678901",
+            "is_private": false,
+            "is_verified": false,
+            "profile_pic_id": "2345678901_2345678901",
+            "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/user_2345678901_profile.jpg"
+          },
+          "image_versions2": {
+            "candidates": [
+              {
+                "width": 640,
+                "height": 1138,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3222000000000000002_640x1138.jpg"
+              },
+              {
+                "width": 1080,
+                "height": 1920,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3222000000000000002_1080x1920.jpg"
+              }
+            ]
+          },
+          "caption": null,
+          "story_hashtags": [],
+          "story_link_stickers": [],
+          "video_duration": 14.966,
+          "has_audio": true,
+          "video_versions": [
+            {
+              "type": 101,
+              "width": 720,
+              "height": 1280,
+              "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3222000000000000002_720x1280.mp4",
+              "id": "3222000000000000002v"
+            },
+            {
+              "type": 102,
+              "width": 480,
+              "height": 854,
+              "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3222000000000000002_480x854.mp4",
+              "id": "3222000000000000002v2"
+            }
+          ]
+        }
+      ],
+      "media_count": 1,
+      "media_ids": [
+        "3222000000000000002"
+      ],
+      "prefetch_count": 0,
+      "has_besties_media": false
+    }
+  },
+  "status": "ok"
+}
