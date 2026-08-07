@@ -1,0 +1,119 @@
+{
+  "reels": {
+    "1234567890": {
+      "id": 1234567890,
+      "latest_reel_media": 1786095900,
+      "expiring_at": 1786182300,
+      "seen": 0,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 1234567890,
+        "pk_id": "1234567890",
+        "username": "acme_dental",
+        "full_name": "Acme_Dental Co",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "1234567890_1234567890",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/acme_dental_profile.jpg"
+      },
+      "items": [
+        {
+          "pk": "3111000000000000001",
+          "id": "3111000000000000001_1234567890",
+          "taken_at": 1786095000,
+          "expiring_at": 1786181400,
+          "media_type": 1,
+          "code": "C1Ph",
+          "device_timestamp": 1786095000000,
+          "original_width": 1080,
+          "original_height": 1920,
+          "user": {
+            "pk": 1234567890,
+            "pk_id": "1234567890",
+            "username": "user_1234567890",
+            "full_name": "User 1234567890",
+            "is_private": false,
+            "is_verified": false,
+            "profile_pic_id": "1234567890_1234567890",
+            "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/user_1234567890_profile.jpg"
+          },
+          "image_versions2": {
+            "candidates": [
+              {
+                "width": 640,
+                "height": 1138,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000001_640x1138.jpg"
+              },
+              {
+                "width": 1080,
+                "height": 1920,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000001_1080x1920.jpg"
+              },
+              {
+                "width": 320,
+                "height": 569,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000001_320x569.jpg"
+              }
+            ]
+          },
+          "caption": null,
+          "story_hashtags": [],
+          "story_link_stickers": []
+        },
+        {
+          "pk": "3111000000000000003",
+          "id": "3111000000000000003_1234567890",
+          "taken_at": 1786095900,
+          "expiring_at": 1786182300,
+          "media_type": 1,
+          "code": "C3Ph",
+          "device_timestamp": 1786095900000,
+          "original_width": 1080,
+          "original_height": 1920,
+          "user": {
+            "pk": 1234567890,
+            "pk_id": "1234567890",
+            "username": "user_1234567890",
+            "full_name": "User 1234567890",
+            "is_private": false,
+            "is_verified": false,
+            "profile_pic_id": "1234567890_1234567890",
+            "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/user_1234567890_profile.jpg"
+          },
+          "image_versions2": {
+            "candidates": [
+              {
+                "width": 640,
+                "height": 1138,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000003_640x1138.jpg"
+              },
+              {
+                "width": 1080,
+                "height": 1920,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000003_1080x1920.jpg"
+              },
+              {
+                "width": 320,
+                "height": 569,
+                "url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/3111000000000000003_320x569.jpg"
+              }
+            ]
+          },
+          "caption": null,
+          "story_hashtags": [],
+          "story_link_stickers": []
+        }
+      ],
+      "media_count": 2,
+      "media_ids": [
+        "3111000000000000001",
+        "3111000000000000003"
+      ],
+      "prefetch_count": 0,
+      "has_besties_media": false
+    }
+  },
+  "status": "ok"
+}

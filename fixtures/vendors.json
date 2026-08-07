@@ -1,0 +1,108 @@
+{
+  "_comment": "Stub Recommend.us vendor data (SPEC 7.5, open question #2 - real schema pending). Shaped to exercise every branch of the bizcheck chain: good fit, low fit, community conflict, geography miss, forwarding block, and no vendor at all.",
+  "vendors": [
+    {
+      "vendor_id": "vnd_plumb_001",
+      "name": "Beacon Hill Plumbing Co.",
+      "service_categories": ["plumbing"],
+      "community": "boston-north",
+      "geographies": ["Boston", "Cambridge", "Somerville"],
+      "base_service_fit": 88.0,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "happy path - passes all five checks"
+    },
+    {
+      "vendor_id": "vnd_roof_002",
+      "name": "Charles River Roofing",
+      "service_categories": ["roofing", "gutters"],
+      "community": "boston-west",
+      "geographies": [],
+      "base_service_fit": 76.5,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "empty geographies = nationwide, so check 4 always passes"
+    },
+    {
+      "vendor_id": "vnd_land_003",
+      "name": "Greenline Landscaping",
+      "service_categories": ["landscaping", "lawn_care"],
+      "community": "cambridge-porter",
+      "geographies": ["Cambridge", "Arlington"],
+      "base_service_fit": 62.0,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "check 2 - service fit below the 70 threshold"
+    },
+    {
+      "vendor_id": "vnd_move_004",
+      "name": "Northside Movers",
+      "service_categories": ["moving"],
+      "community": "boston-north",
+      "geographies": ["Boston", "Quincy"],
+      "base_service_fit": 81.0,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "check 3 - shares community boston-north with leads from that community"
+    },
+    {
+      "vendor_id": "vnd_elec_005",
+      "name": "Seaport Electric",
+      "service_categories": ["electrical"],
+      "community": "boston-seaport",
+      "geographies": ["Boston", "Everett"],
+      "base_service_fit": 84.0,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "check 4 - narrow geography list, misses leads from e.g. Worcester"
+    },
+    {
+      "vendor_id": "vnd_clean_006",
+      "name": "Fenway Cleaning Group",
+      "service_categories": ["cleaning", "house_cleaning"],
+      "community": "boston-fenway",
+      "geographies": ["Boston", "Brookline"],
+      "base_service_fit": 79.0,
+      "accepts_forwarded_leads": false,
+      "active": true,
+      "_exercises": "check 5 - internal forwarding rules block this vendor"
+    },
+    {
+      "vendor_id": "vnd_hvac_007",
+      "name": "Mystic Valley HVAC",
+      "service_categories": ["hvac", "heating", "cooling"],
+      "community": "medford",
+      "geographies": ["Medford", "Malden", "Somerville"],
+      "base_service_fit": 91.0,
+      "accepts_forwarded_leads": true,
+      "active": true,
+      "_exercises": "second happy path, different category and geography"
+    },
+    {
+      "vendor_id": "vnd_paint_008",
+      "name": "Old Colony Painters",
+      "service_categories": ["painting"],
+      "community": "quincy",
+      "geographies": ["Quincy", "Braintree"],
+      "base_service_fit": 73.0,
+      "accepts_forwarded_leads": true,
+      "active": false,
+      "_exercises": "inactive - never selected, so painting behaves like no-vendor (check 1)"
+    }
+  ],
+  "category_fit_adjustments": {
+    "_comment": "Optional per-story refinements applied on top of base_service_fit by StubVendorRepository.service_fit(). Keyed by intent_type.",
+    "explicit_request": 5.0,
+    "recommendation_request": 2.0,
+    "complaint": -20.0,
+    "unknown": 0.0
+  },
+  "forwarding_rules": {
+    "_comment": "Internal forwarding rules (SPEC 7.5 check 5). blocked_categories applies globally; blocked_vendor_geographies blocks specific vendor/geography pairs.",
+    "blocked_categories": ["legal", "medical", "firearms"],
+    "blocked_vendor_geographies": {
+      "vnd_roof_002": ["Worcester"]
+    },
+    "min_score_for_forwarding": 5
+  }
+}
