@@ -52,7 +52,8 @@ def main() -> int:
     print("Preparing transport and proxy ...")
 
     result = run_login_test(
-        settings.ig_worker_username or None, code_prompt=ask_for_code
+        settings.ig_worker_username or None, code_prompt=ask_for_code,
+        allow_no_proxy=True
     )
 
     print()

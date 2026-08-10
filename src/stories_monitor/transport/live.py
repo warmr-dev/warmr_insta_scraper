@@ -8,11 +8,13 @@ crosses the package boundary.
 from __future__ import annotations
 
 import functools
+import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 import httpx
 from instagrapi import Client as _BaseClient
+from instagrapi import config
 from instagrapi import exceptions as ig_exc
 
 from ..config import get_settings
@@ -255,20 +257,29 @@ class LiveTransport(InstagramTransport):
 
     @translate_errors
     def reels_media(self, user_ids: list[int]) -> dict[int, list[StoryItem]]:
-        """Batch story fetch for up to ~50 user ids (SPEC 7.3)."""
+        """Batch story fetch for up to ~50 user ids (SPEC 7.3).
+
+        Payload matches `ReelsMediaFeed` in dilame/instagram-private-api, which
+        the SPEC names as the reference implementation. The three fields beyond
+        the obvious ones matter: `supported_capabilities_new` tells Instagram
+        which media formats we can decode, and `_uid`/`device_id` make the
+        request look like the app rather than a bare API call.
+        """
         if not user_ids:
             return {}
-        response = (
-            self.client.private_request(
-                "feed/reels_media/",
-                data={
-                    "user_ids": [str(u) for u in user_ids],
-                    "source": "feed_timeline",
-                    "_uuid": self.client.uuid,
-                },
-            )
-            or {}
-        )
+
+        data: dict[str, Any] = {
+            "user_ids": [str(u) for u in user_ids],
+            "source": "feed_timeline",
+            "_uuid": self.client.uuid,
+            "device_id": self.client.android_device_id,
+            "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
+        }
+        # Only present once logged in; omit rather than send an empty value.
+        if self.client.user_id:
+            data["_uid"] = str(self.client.user_id)
+
+        response = self.client.private_request("feed/reels_media/", data=data) or {}
         return _parse_reels_media(response)
 
     @translate_errors
