@@ -102,6 +102,7 @@ def seed_worker(
     status: str = "warming",
     timezone: str = "America/Los_Angeles",
     force_device: bool = False,
+    allow_no_proxy: bool = False,
 ) -> dict[str, Any]:
     """Insert or update a worker account. Returns a small report.
 
@@ -110,10 +111,19 @@ def seed_worker(
     """
     if not username or not password:
         raise ValueError("username and password are required")
-    if not proxy_url:
+    if not proxy_url and not allow_no_proxy:
         raise ValueError(
             "proxy_url is required - an account must be bound to a proxy before "
-            "its first login (SPEC section 8)"
+            "its first login (SPEC section 8). Pass allow_no_proxy=True to bind "
+            "the local IP instead (testing only)."
+        )
+    if not proxy_url:
+        # The local IP becomes this account's identity for as long as it is used;
+        # switching to a proxy later is itself a ban signal (SPEC section 8).
+        log.warning(
+            "seeding_without_proxy",
+            username=username,
+            detail="account will be bound to the local IP",
         )
 
     box = SecretBox()

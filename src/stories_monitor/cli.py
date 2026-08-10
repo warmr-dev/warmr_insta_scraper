@@ -110,6 +110,11 @@ def import_targets(csv_path: str, dry_run: bool) -> None:
     type=click.Choice(["warming", "active", "reserve"]),
 )
 @click.option(
+    "--allow-no-proxy",
+    is_flag=True,
+    help="Bind the local IP instead of a proxy. Testing only (SPEC section 8).",
+)
+@click.option(
     "--force-device",
     is_flag=True,
     help="Regenerate device settings / rotate proxy. SPEC section 8 forbids this "
@@ -121,6 +126,7 @@ def seed_worker_cmd(
     proxy_url: str | None,
     shard_id: int,
     status: str,
+    allow_no_proxy: bool,
     force_device: bool,
 ) -> None:
     """Insert a worker account (offline - no Instagram call)."""
@@ -134,12 +140,19 @@ def seed_worker_cmd(
         shard_id=shard_id,
         status=status,
         force_device=force_device,
+        allow_no_proxy=allow_no_proxy,
     )
     click.echo(json.dumps(report, indent=2, default=str))
 
 
 @cli.command("login-test")
 @click.option("--username", default=None, help="Worker account username")
+@click.option(
+    "--allow-no-proxy",
+    is_flag=True,
+    help="Log in from this machine's IP with no proxy bound. Testing only - the "
+    "local IP becomes the account's identity (SPEC section 8).",
+)
 @click.option(
     "--verification-code",
     default=None,
@@ -150,7 +163,9 @@ def seed_worker_cmd(
     prompt="This performs a REAL Instagram login. Repeated logins are the strongest "
     "ban signal (SPEC section 8). Continue?"
 )
-def login_test(username: str | None, verification_code: str | None) -> None:
+def login_test(
+    username: str | None, allow_no_proxy: bool, verification_code: str | None
+) -> None:
     """One real login through the account's bound proxy, then stop.
 
     Deliberately minimal: it logs in, persists the session so no further login
@@ -170,6 +185,7 @@ def login_test(username: str | None, verification_code: str | None) -> None:
         username or get_settings().ig_worker_username or None,
         verification_code=verification_code,
         code_prompt=ask_for_code,
+        allow_no_proxy=allow_no_proxy,
     )
     click.echo(json.dumps(result, indent=2, default=str))
 

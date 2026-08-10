@@ -41,6 +41,7 @@ def run_login_test(
     username: str | None = None,
     verification_code: str | None = None,
     code_prompt: Callable[[], str] | None = None,
+    allow_no_proxy: bool = False,
 ) -> dict[str, Any]:
     """Log the account in once through its bound proxy and persist the session.
 
@@ -64,10 +65,20 @@ def run_login_test(
         session_json = dict(account.session_json) if account.session_json else None
         password_enc = account.password_enc
 
-    if not proxy_url:
+    if not proxy_url and not allow_no_proxy:
         raise RuntimeError(
             "account has no bound proxy; refusing to log in from the local IP "
-            "(SPEC section 8 binds a proxy for the account's whole life)"
+            "(SPEC section 8 binds a proxy for the account's whole life). "
+            "Pass allow_no_proxy=True to override for local testing."
+        )
+    if not proxy_url:
+        # Deliberate: the local IP becomes this account's bound identity for as
+        # long as it is used. Switching to a proxy later is itself a ban signal,
+        # so this is a testing mode, not a path to production (SPEC section 8).
+        log.warning(
+            "no_proxy_bound",
+            username=account_username,
+            detail="logging in from the local IP; this IP is now this account's identity",
         )
 
     transport = get_transport(
