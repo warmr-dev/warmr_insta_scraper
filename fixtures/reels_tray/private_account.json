@@ -1,0 +1,59 @@
+{
+  "tray": [
+    {
+      "id": "2345678901",
+      "latest_reel_media": 1786093200,
+      "seen": 0,
+      "expiring_at": 1786179600,
+      "media_count": 0,
+      "prefetch_count": 0,
+      "has_besties_media": false,
+      "ranked_position": 0,
+      "seen_ranked_position": 0,
+      "muted": false,
+      "can_reply": false,
+      "can_reshare": false,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 2345678901,
+        "pk_id": "2345678901",
+        "username": "north_cafe_private",
+        "full_name": "North Cafe (private)",
+        "is_private": true,
+        "is_verified": false,
+        "profile_pic_id": "2345678901_2345678901",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/north_cafe_private_profile.jpg"
+      }
+    },
+    {
+      "id": "3456789012",
+      "latest_reel_media": 1786096500,
+      "seen": 0,
+      "expiring_at": 1786182900,
+      "media_count": 1,
+      "prefetch_count": 0,
+      "has_besties_media": false,
+      "ranked_position": 0,
+      "seen_ranked_position": 0,
+      "muted": false,
+      "can_reply": true,
+      "can_reshare": true,
+      "reel_type": "user_reel",
+      "user": {
+        "pk": 3456789012,
+        "pk_id": "3456789012",
+        "username": "vega_fitness",
+        "full_name": "Vega Fitness Studio",
+        "is_private": false,
+        "is_verified": false,
+        "profile_pic_id": "3456789012_3456789012",
+        "profile_pic_url": "https://scontent-iad3-1.cdninstagram.com/v/t51.2885-15/vega_fitness_profile.jpg"
+      }
+    }
+  ],
+  "status": "ok",
+  "story_ranking_token": "0.0-fixture",
+  "face_filter_nux_version": 0,
+  "has_new_nux_story": false,
+  "sticker_version": 28
+}

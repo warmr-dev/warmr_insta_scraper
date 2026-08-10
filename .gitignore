@@ -24,6 +24,12 @@ env/
 .coverage
 htmlcov/
 
+# Runtime state - sessions and downloaded media must never be committed
+sessions/
+tmp_media/
+probe_output/
+*.log
+
 # Pilot / scrape outputs
 hiker_stories_pilot_*.jsonl
 *.jsonl
