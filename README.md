@@ -122,6 +122,31 @@ implementations:
 
 See `fixtures/README.md` for scenario names and conventions.
 
+### Upstream references — track both
+
+Instagram changes its private API without notice, and these two repositories are how we
+find out. Watch releases on both; when a call starts failing, check them before debugging
+our code.
+
+- **[subzeroid/instagrapi](https://github.com/subzeroid/instagrapi)** — the client we
+  depend on. Exception classes get renamed and moved between releases, which is why
+  `live.py` resolves every name defensively via `getattr` rather than importing it
+  directly. Worth reading the source before trusting a method: `instagrapi` has **no
+  `reels_tray` method**, which is why we call `private_request("feed/reels_tray/")`
+  ourselves.
+- **[dilame/instagram-private-api](https://github.com/dilame/instagram-private-api)** —
+  a TypeScript client with the request payloads and response shapes typed out. It is the
+  reference the SPEC names in 7.1, and it is the better source for *what the app actually
+  sends*, since it models each feed explicitly.
+
+This is not decoration. Checking `ReelsMediaFeed` in the second repo found a real bug:
+our `reels_media` call was sending 3 fields where the app sends 7. The missing
+`supported_capabilities_new` tells Instagram which media formats the client can decode,
+and `_uid` / `device_id` make the request look like the app rather than a bare API call.
+
+When adding or changing an endpoint, compare against **both**: instagrapi for how to call
+it, dilame for what the payload must contain.
+
 ---
 
 ## AI provider
