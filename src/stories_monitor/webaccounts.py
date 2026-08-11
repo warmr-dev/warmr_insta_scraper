@@ -20,6 +20,7 @@ from sqlalchemy import select
 from .db.models import Cookie
 from .db.session import session_scope
 from .logging_setup import get_logger
+from .transport.base import LoginRequiredError, RateLimitedError
 from .transport.web import COOKIE_NAMES, WebTransport, parse_cookie_header
 
 log = get_logger(__name__)
@@ -136,6 +137,33 @@ def mark_failed(username: str, error: str) -> None:
     log.warning("web_cookies_marked_failed", username=username, error=error[:120])
 
 
+def note_error(username: str, error: str) -> None:
+    """Записать причину сбоя, НЕ отключая аккаунт.
+
+    Для временных отказов - сеть, 429. Отключать из-за них нельзя: аккаунт
+    рабочий, просто сейчас не отвечает.
+    """
+    from sqlalchemy import update as sa_update
+
+    with session_scope() as session:
+        session.execute(
+            sa_update(Cookie).where(Cookie.username == username).values(last_error=error[:500])
+        )
+
+
+def revive(username: str) -> bool:
+    """Снова включить аккаунт после обновления куки."""
+    from sqlalchemy import update as sa_update
+
+    with session_scope() as session:
+        result = session.execute(
+            sa_update(Cookie)
+            .where(Cookie.username == username)
+            .values(is_active=True, last_error=None)
+        )
+        return bool(result.rowcount)
+
+
 def check_alive(account: WebAccount) -> tuple[bool, str]:
     """Живы ли куки. Возвращает (жива, пояснение).
 
@@ -197,8 +225,26 @@ def collect_stories(
                 tray_entries=tray.entry_count,
                 users_with_stories=len(users),
             )
+        except LoginRequiredError as exc:
+            # Куки протухли. Продлить их из кода нельзя, поэтому аккаунт
+            # выключается: следующие циклы его пропустят, и мы не будем зря
+            # долбить Instagram мёртвой сессией.
+            mark_failed(account.username, f"куки истекли: {exc}")
+            status[account.username] = "КУКИ ИСТЕКЛИ - отключён, обновите в Supabase"
+            log.error(
+                "web_cookies_expired",
+                username=account.username,
+                detail="is_active=false; обновите строку в таблице cookies",
+            )
+        except RateLimitedError as exc:
+            # Временно, аккаунт не трогаем - отключать его было бы ошибкой.
+            status[account.username] = "ЛИМИТ - пропуск цикла"
+            log.warning("web_account_throttled", username=account.username, error=str(exc)[:80])
         except Exception as exc:  # noqa: BLE001 - один мёртвый аккаунт не рушит сбор
-            status[account.username] = f"НЕ РАБОТАЕТ - {type(exc).__name__}"
+            # Сетевой сбой и прочее - тоже временное. Не выключаем, но
+            # записываем причину, чтобы её было видно в Supabase.
+            note_error(account.username, f"{type(exc).__name__}: {exc}")
+            status[account.username] = f"ОШИБКА - {type(exc).__name__}"
             log.warning(
                 "web_account_failed", username=account.username, error=str(exc)[:120]
             )
