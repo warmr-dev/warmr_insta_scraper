@@ -20,14 +20,74 @@ import os
 import pathlib
 import sys
 import tempfile
+from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from stories_monitor.ai.client import get_ai_client  # noqa: E402
 from stories_monitor.ai.ocr import get_ocr_engine  # noqa: E402
+from sqlalchemy import update  # noqa: E402
+from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
+
 from stories_monitor.config import get_settings  # noqa: E402
+from stories_monitor.db.models import Story, Target  # noqa: E402
+from stories_monitor.db.session import session_scope  # noqa: E402
 from stories_monitor.logging_setup import configure_logging  # noqa: E402
 from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
+
+
+def _remember(item: Any, user_id: int, username: str) -> bool:
+    """Записать сторис в БД. True - новая, False - уже видели.
+
+    Дедупликация та же, что и в фетчере: INSERT ... ON CONFLICT (story_id)
+    DO NOTHING. Конфликт = уже обрабатывали, и это единственный механизм
+    (§7.3). Видео сразу получают `skipped_video` и в AI не попадают (§1).
+    """
+    taken = dt.datetime.fromtimestamp(item.taken_at, tz=dt.UTC)
+    state = "skipped_video" if not item.is_photo else "new"
+
+    with session_scope() as session:
+        # Цель должна существовать - FK на targets.
+        session.execute(
+            pg_insert(Target)
+            .values(
+                user_id=user_id,
+                username=username,
+                instagram_url=f"https://instagram.com/{username}",
+                shard_id=0,
+                status="active",
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
+        )
+
+    with session_scope() as session:
+        inserted = session.execute(
+            pg_insert(Story)
+            .values(
+                story_id=item.story_id,
+                target_user_id=user_id,
+                taken_at=taken,
+                expiring_at=(
+                    dt.datetime.fromtimestamp(item.expiring_at, tz=dt.UTC)
+                    if item.expiring_at
+                    else None
+                ),
+                media_type=item.media_type,
+                pipeline_state=state,
+            )
+            .on_conflict_do_nothing(index_elements=["story_id"])
+            .returning(Story.story_id)
+        ).scalar_one_or_none()
+
+    return inserted is not None
+
+
+def _mark(story_id: str, state: str) -> None:
+    """Продвинуть состояние сторис после анализа."""
+    with session_scope() as session:
+        session.execute(
+            update(Story).where(Story.story_id == story_id).values(pipeline_state=state)
+        )
 
 
 def main() -> int:
@@ -68,9 +128,34 @@ def main() -> int:
     videos = sum(1 for items in reels.values() for i in items if not i.is_photo)
     photos.sort(key=lambda p: p[1].taken_at, reverse=True)  # свежие первыми
 
-    print(f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)")
-    print(f"классифицирую {min(args.limit, len(photos))} самых свежих\n")
+    # Дедупликация: та же гарантия, что и в фетчере - INSERT ... ON CONFLICT
+    # (story_id) DO NOTHING. Конфликт означает "уже видели", и сторис больше
+    # никогда не скачивается и не уходит в AI (§7.3).
+    fresh: list[tuple[int, Any]] = []
+    seen_before = 0
+    for uid, item in photos:
+        if _remember(item, uid, names.get(uid, str(uid))):
+            fresh.append((uid, item))
+        else:
+            seen_before += 1
+
+    for uid, items in reels.items():
+        for item in items:
+            if not item.is_photo:
+                _remember(item, uid, names.get(uid, str(uid)))
+
+    print(
+        f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)\n"
+        f"уже анализировали ранее: {seen_before} | новых к анализу: {len(fresh)}"
+    )
+    if not fresh:
+        print("\nНовых фото нет - все уже проходили через AI. Платить второй раз не за что.")
+        transport.close()
+        return 0
+
+    print(f"классифицирую {min(args.limit, len(fresh))} самых свежих\n")
     print("=" * 78)
+    photos = fresh
 
     now = dt.datetime.now(dt.UTC)
     results: list[tuple[str, int, str, str]] = []
@@ -120,9 +205,11 @@ def main() -> int:
                 )
             if explanation:
                 print(f"      {explanation[:100]}")
+            _mark(item.story_id, "analyzed")
             results.append((name, final, cheap.service_category or "-", route))
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
             print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
+            _mark(item.story_id, "failed")
         finally:
             # Медиа не переживает анализ (§7.4, §11).
             try:
