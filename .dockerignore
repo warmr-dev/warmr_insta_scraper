@@ -1,0 +1,11 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+cookies*.txt
+.env
+probe_output/
+tmp_media/

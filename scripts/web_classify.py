@@ -32,7 +32,7 @@ from typing import Any
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 import httpx  # noqa: E402
-from sqlalchemy import update  # noqa: E402
+from sqlalchemy import select, update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
 from stories_monitor.ai.client import get_ai_client  # noqa: E402
@@ -47,44 +47,66 @@ from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa:
 # --- сохранение и дедупликация ------------------------------------------------
 
 
-def _remember(item: Any, user_id: int, username: str) -> None:
-    """Записать сторис в БД (§7.3). Видео сразу получают skipped_video (§1)."""
-    taken = dt.datetime.fromtimestamp(item.taken_at, tz=dt.UTC)
-    with session_scope() as session:
-        session.execute(
-            pg_insert(Target)
-            .values(
-                user_id=user_id,
-                username=username,
-                instagram_url=f"https://instagram.com/{username}",
-                shard_id=0,
-                status="active",
-            )
-            .on_conflict_do_nothing(index_elements=["user_id"])
-        )
-    with session_scope() as session:
-        session.execute(
-            pg_insert(Story)
-            .values(
-                story_id=item.story_id,
-                target_user_id=user_id,
-                taken_at=taken,
-                expiring_at=(
-                    dt.datetime.fromtimestamp(item.expiring_at, tz=dt.UTC)
-                    if item.expiring_at
-                    else None
-                ),
-                media_type=item.media_type,
-                pipeline_state="skipped_video" if not item.is_photo else "new",
-            )
-            .on_conflict_do_nothing(index_elements=["story_id"])
-        )
+def _remember_all(reels: dict[int, list[Any]], names: dict[int, str]) -> set[str]:
+    """Записать ВСЕ сторис двумя запросами и вернуть уже проанализированные.
 
+    Раньше это были три round-trip на каждую сторис. На удалённой БД (Supabase
+    в Сиднее, ~2.3с на запрос) 145 сторис превращались в ~17 минут - при
+    запуске раз в минуту это неприемлемо. Теперь весь пул уходит пачкой.
+    """
+    targets: list[dict[str, Any]] = []
+    stories: list[dict[str, Any]] = []
+    seen_ids: list[str] = []
 
-def _already_analysed(story_id: str) -> bool:
-    """Уже прогоняли через AI? Смотрим story_analysis, не stories."""
+    for user_id, items in reels.items():
+        username = names.get(user_id, str(user_id))
+        targets.append(
+            {
+                "user_id": user_id,
+                "username": username,
+                "instagram_url": f"https://instagram.com/{username}",
+                "shard_id": 0,
+                "status": "active",
+            }
+        )
+        for item in items:
+            seen_ids.append(item.story_id)
+            stories.append(
+                {
+                    "story_id": item.story_id,
+                    "target_user_id": user_id,
+                    "taken_at": dt.datetime.fromtimestamp(item.taken_at, tz=dt.UTC),
+                    "expiring_at": (
+                        dt.datetime.fromtimestamp(item.expiring_at, tz=dt.UTC)
+                        if item.expiring_at
+                        else None
+                    ),
+                    "media_type": item.media_type,
+                    # Видео оседают здесь и до AI не доходят (§1).
+                    "pipeline_state": "skipped_video" if not item.is_photo else "new",
+                }
+            )
+
     with session_scope() as session:
-        return session.get(StoryAnalysis, story_id) is not None
+        if targets:
+            session.execute(
+                pg_insert(Target).on_conflict_do_nothing(index_elements=["user_id"]),
+                targets,
+            )
+        if stories:
+            session.execute(
+                pg_insert(Story).on_conflict_do_nothing(index_elements=["story_id"]),
+                stories,
+            )
+
+    # Одним запросом: что из этого пула уже прогонялось через AI.
+    if not seen_ids:
+        return set()
+    with session_scope() as session:
+        rows = session.scalars(
+            select(StoryAnalysis.story_id).where(StoryAnalysis.story_id.in_(seen_ids))
+        ).all()
+    return set(rows)
 
 
 def _save_analysis(
@@ -168,19 +190,9 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
     videos = sum(1 for items in reels.values() for i in items if not i.is_photo)
     photos.sort(key=lambda p: p[1].taken_at, reverse=True)
 
-    fresh: list[tuple[int, Any]] = []
-    seen_before = 0
-    for uid, item in photos:
-        _remember(item, uid, names.get(uid, str(uid)))
-        if _already_analysed(item.story_id):
-            seen_before += 1
-        else:
-            fresh.append((uid, item))
-
-    for uid, items in reels.items():
-        for item in items:
-            if not item.is_photo:
-                _remember(item, uid, names.get(uid, str(uid)))
+    analysed = _remember_all(reels, names)
+    fresh = [(uid, item) for uid, item in photos if item.story_id not in analysed]
+    seen_before = len(photos) - len(fresh)
 
     print(
         f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)\n"

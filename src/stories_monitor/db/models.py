@@ -198,6 +198,41 @@ class DailyActionCounter(Base):
     requests_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class Cookie(Base):
+    """Веб-куки одного аккаунта - одна строка на аккаунт.
+
+    Отдельной таблицей, а не JSONB, чтобы строку можно было поправить руками в
+    интерфейсе Supabase: веб-куки нельзя продлить из кода, поэтому ручное
+    обновление - штатная операция, а не авария.
+    """
+
+    __tablename__ = "cookies"
+
+    username: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    # Семь куки веб-API. Без ig_did/mid/datr/rur ленты отвечают 302.
+    sessionid: Mapped[str] = mapped_column(Text, nullable=False)
+    csrftoken: Mapped[str | None] = mapped_column(Text)
+    ds_user_id: Mapped[str | None] = mapped_column(Text)
+    ig_did: Mapped[str | None] = mapped_column(Text)
+    mid: Mapped[str | None] = mapped_column(Text)
+    datr: Mapped[str | None] = mapped_column(Text)
+    rur: Mapped[str | None] = mapped_column(Text)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_cookies_active", "is_active"),)
+
+    def as_jar(self) -> dict[str, str]:
+        """Куки в виде словаря для WebTransport, пустые значения отброшены."""
+        names = ("sessionid", "csrftoken", "ds_user_id", "ig_did", "mid", "datr", "rur")
+        return {n: v for n in names if (v := getattr(self, n))}
+
+
 class MetricSample(Base):
     """Simple stats table backing the /metrics endpoint (SPEC section 10)."""
 

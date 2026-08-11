@@ -17,16 +17,16 @@ from typing import Any
 
 from sqlalchemy import select
 
-from .db.models import WorkerAccount
+from .db.models import Cookie
 from .db.session import session_scope
 from .logging_setup import get_logger
 from .transport.web import COOKIE_NAMES, WebTransport, parse_cookie_header
 
 log = get_logger(__name__)
 
-# Ключ внутри session_json, чтобы веб-куки не затирали мобильную сессию.
-_WEB_KEY = "web_cookies"
-_SAVED_AT = "web_cookies_saved_at"
+# Куки живут в отдельной таблице `cookies` - её удобно править руками в
+# интерфейсе Supabase, когда они истекли. Продлить их из кода нельзя, поэтому
+# ручное обновление входит в штатную эксплуатацию.
 
 
 @dataclass(slots=True)
@@ -52,81 +52,88 @@ class WebAccount:
 
 
 def save_cookies(username: str, raw: str | dict[str, str]) -> WebAccount:
-    """Сохранить веб-куки для аккаунта. Мобильную сессию не трогает."""
+    """Сохранить веб-куки аккаунта в таблицу `cookies` (upsert по username)."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     jar = parse_cookie_header(raw) if isinstance(raw, str) else dict(raw)
     if not jar.get("sessionid"):
         raise ValueError("в куки нет sessionid")
 
+    values = {n: jar.get(n) for n in COOKIE_NAMES}
+    values["username"] = username
+    values["is_active"] = True
+    values["updated_at"] = dt.datetime.now(dt.UTC)
+    values["last_error"] = None
+
     with session_scope() as session:
-        account = session.scalars(
-            select(WorkerAccount).where(WorkerAccount.username == username)
-        ).first()
-        if account is None:
-            raise ValueError(
-                f"{username} не заведён - сначала `stories seed-worker`"
+        session.execute(
+            pg_insert(Cookie)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["username"],
+                set_={k: v for k, v in values.items() if k != "username"},
             )
-
-        # Мержим, а не заменяем: мобильная сессия должна пережить это.
-        blob = dict(account.session_json or {})
-        blob[_WEB_KEY] = jar
-        blob[_SAVED_AT] = dt.datetime.now(dt.UTC).isoformat()
-        account.session_json = blob
-        session.flush()
-
-        result = WebAccount(
-            id=account.id,
-            username=account.username,
-            shard_id=account.shard_id,
-            cookies=jar,
-            saved_at=blob[_SAVED_AT],
         )
 
+    account = WebAccount(
+        id=0,
+        username=username,
+        shard_id=0,
+        cookies=jar,
+        saved_at=values["updated_at"].isoformat(),
+    )
     log.info(
         "web_cookies_saved",
         username=username,
         cookies=len(jar),
-        missing=result.missing_cookies,
+        missing=account.missing_cookies,
     )
-    return result
+    return account
 
 
 def load_accounts(username: str | None = None) -> list[WebAccount]:
-    """Аккаунты с сохранёнными веб-куки. Без аргумента - все."""
+    """Активные аккаунты из таблицы `cookies`. Без аргумента - все."""
     accounts: list[WebAccount] = []
     with session_scope() as session:
-        stmt = select(WorkerAccount).order_by(WorkerAccount.id)
+        stmt = select(Cookie).where(Cookie.is_active.is_(True)).order_by(Cookie.username)
         if username:
-            stmt = stmt.where(WorkerAccount.username == username)
-        for account in session.scalars(stmt).all():
-            blob = account.session_json or {}
-            jar = blob.get(_WEB_KEY)
-            if not isinstance(jar, dict) or not jar.get("sessionid"):
+            stmt = select(Cookie).where(Cookie.username == username)
+        for row in session.scalars(stmt).all():
+            jar = row.as_jar()
+            if not jar.get("sessionid"):
                 continue
             accounts.append(
                 WebAccount(
-                    id=account.id,
-                    username=account.username,
-                    shard_id=account.shard_id,
-                    cookies=dict(jar),
-                    saved_at=blob.get(_SAVED_AT),
+                    id=0,
+                    username=row.username,
+                    shard_id=0,
+                    cookies=jar,
+                    saved_at=row.updated_at.isoformat() if row.updated_at else None,
                 )
             )
     return accounts
 
 
 def clear_cookies(username: str) -> bool:
-    """Удалить веб-куки, оставив мобильную сессию нетронутой."""
+    """Удалить куки аккаунта из таблицы."""
+    from sqlalchemy import delete
+
     with session_scope() as session:
-        account = session.scalars(
-            select(WorkerAccount).where(WorkerAccount.username == username)
-        ).first()
-        if account is None or not account.session_json:
-            return False
-        blob = dict(account.session_json)
-        had = blob.pop(_WEB_KEY, None) is not None
-        blob.pop(_SAVED_AT, None)
-        account.session_json = blob
-        return had
+        result = session.execute(delete(Cookie).where(Cookie.username == username))
+        return bool(result.rowcount)
+
+
+def mark_failed(username: str, error: str) -> None:
+    """Пометить куки нерабочими - видно в Supabase, какие пора обновить."""
+    from sqlalchemy import update as sa_update
+
+    with session_scope() as session:
+        session.execute(
+            sa_update(Cookie)
+            .where(Cookie.username == username)
+            .values(last_error=error[:500], is_active=False)
+        )
+    log.warning("web_cookies_marked_failed", username=username, error=error[:120])
 
 
 def check_alive(account: WebAccount) -> tuple[bool, str]:
