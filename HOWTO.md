@@ -241,6 +241,33 @@ chmod 600 cookies.txt
 
 Скрипт скажет, каких куки не хватает, если что-то забыли.
 
+### Несколько аккаунтов
+
+Куки можно сохранить для каждого аккаунта — они лежат в БД рядом с мобильной сессией
+и не мешают друг другу.
+
+```bash
+# сохранить куки аккаунта
+.venv/bin/python -m stories_monitor.cli web-add yrsayl7 --cookies-file cookies.txt
+
+# список + проверка живым запросом
+.venv/bin/python -m stories_monitor.cli web-list
+.venv/bin/python -m stories_monitor.cli web-list --check
+
+# удалить (мобильная сессия останется)
+.venv/bin/python -m stories_monitor.cli web-remove yrsayl7
+```
+
+Затем сбор идёт **со всех аккаунтов сразу** — это §1 применительно к веб-куки:
+объединение подписок покрывает больше целей, чем любой аккаунт поодиночке.
+
+```bash
+.venv/bin/python scripts/web_classify.py --all-accounts --limit 20
+.venv/bin/python scripts/web_classify.py --account yrsayl7      # только один
+```
+
+Мёртвый аккаунт не рушит сбор: он помечается `НЕ РАБОТАЕТ`, остальные продолжают.
+
 ### Повторные запуски ничего не стоят
 
 Сторис пишутся в БД через `ON CONFLICT (story_id) DO NOTHING`, поэтому одна и та же

@@ -1,15 +1,22 @@
-"""Скачать фото-сторис через веб-API и прогнать через AI-классификатор.
+"""Классификация фото-сторис через веб-API.
 
-    python scripts/web_classify.py --cookies '<полный набор куки>' --limit 10
+Один аккаунт:
+    python scripts/web_classify.py --cookies-file cookies.txt --limit 20
 
-Полный путь: reels_tray -> reels_media -> только ФОТО -> OCR -> дешёвая модель
+Все аккаунты с сохранёнными веб-куки (см. `stories web-add`):
+    python scripts/web_classify.py --all-accounts --limit 20
+    python scripts/web_classify.py --account yrsayl7
+
+Путь: reels_tray -> reels_media -> только ФОТО -> OCR -> дешёвая модель
 -> (5-6) умная модель -> оценка.
 
-Видео пропускаются до скачивания и до любого обращения к AI (§1), поэтому денег
-не стоят.
+Видео отсекаются до скачивания и до любого обращения к AI (§1) - денег не стоят.
+Временный файл удаляется в `finally` (§7.4, §11). Только чтение: `media/seen/`
+не вызывается.
 
-Временный файл удаляется в `finally` - медиа не хранится никогда (§7.4, §11).
-Только чтение: `media/seen/` не вызывается.
+Повторно ничего не оплачивается: критерий "уже платили" - строка в
+`story_analysis`, а не в `stories` (туда сторис попадает при первом появлении
+в трее, задолго до AI).
 """
 
 from __future__ import annotations
@@ -24,11 +31,12 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from stories_monitor.ai.client import get_ai_client  # noqa: E402
-from stories_monitor.ai.ocr import get_ocr_engine  # noqa: E402
+import httpx  # noqa: E402
 from sqlalchemy import update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
+from stories_monitor.ai.client import get_ai_client  # noqa: E402
+from stories_monitor.ai.ocr import get_ocr_engine  # noqa: E402
 from stories_monitor.config import get_settings  # noqa: E402
 from stories_monitor.db.models import Story, StoryAnalysis, Target  # noqa: E402
 from stories_monitor.db.session import session_scope  # noqa: E402
@@ -36,18 +44,13 @@ from stories_monitor.logging_setup import configure_logging  # noqa: E402
 from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
 
 
-def _remember(item: Any, user_id: int, username: str) -> bool:
-    """Записать сторис в БД. True - новая, False - уже видели.
+# --- сохранение и дедупликация ------------------------------------------------
 
-    Дедупликация та же, что и в фетчере: INSERT ... ON CONFLICT (story_id)
-    DO NOTHING. Конфликт = уже обрабатывали, и это единственный механизм
-    (§7.3). Видео сразу получают `skipped_video` и в AI не попадают (§1).
-    """
+
+def _remember(item: Any, user_id: int, username: str) -> None:
+    """Записать сторис в БД (§7.3). Видео сразу получают skipped_video (§1)."""
     taken = dt.datetime.fromtimestamp(item.taken_at, tz=dt.UTC)
-    state = "skipped_video" if not item.is_photo else "new"
-
     with session_scope() as session:
-        # Цель должна существовать - FK на targets.
         session.execute(
             pg_insert(Target)
             .values(
@@ -59,9 +62,8 @@ def _remember(item: Any, user_id: int, username: str) -> bool:
             )
             .on_conflict_do_nothing(index_elements=["user_id"])
         )
-
     with session_scope() as session:
-        inserted = session.execute(
+        session.execute(
             pg_insert(Story)
             .values(
                 story_id=item.story_id,
@@ -73,13 +75,16 @@ def _remember(item: Any, user_id: int, username: str) -> bool:
                     else None
                 ),
                 media_type=item.media_type,
-                pipeline_state=state,
+                pipeline_state="skipped_video" if not item.is_photo else "new",
             )
             .on_conflict_do_nothing(index_elements=["story_id"])
-            .returning(Story.story_id)
-        ).scalar_one_or_none()
+        )
 
-    return inserted is not None
+
+def _already_analysed(story_id: str) -> bool:
+    """Уже прогоняли через AI? Смотрим story_analysis, не stories."""
+    with session_scope() as session:
+        return session.get(StoryAnalysis, story_id) is not None
 
 
 def _save_analysis(
@@ -90,8 +95,7 @@ def _save_analysis(
     explanation: str,
     smart_score: int | None = None,
 ) -> None:
-    """Сохранить результат анализа. Upsert по story_id - повторный прогон
-    перезаписывает, а не дублирует."""
+    """Upsert по story_id - повторный прогон перезапишет, а не задублирует."""
     values = {
         "story_id": story_id,
         "ocr_text": ocr_text or None,
@@ -101,8 +105,10 @@ def _save_analysis(
         "final_score": final_score,
         "service_category": cheap.service_category,
         "intent_type": (
-            "seeking_contractor" if cheap.seeking_contractor
-            else "purchase_intent" if cheap.explicit_purchase_intent
+            "seeking_contractor"
+            if cheap.seeking_contractor
+            else "purchase_intent"
+            if cheap.explicit_purchase_intent
             else None
         ),
         "ai_explanation": explanation or None,
@@ -119,76 +125,53 @@ def _save_analysis(
         )
 
 
-def _already_analysed(story_id: str) -> bool:
-    """Уже прогоняли через AI? Проверяем story_analysis, не stories."""
-    with session_scope() as session:
-        return session.get(StoryAnalysis, story_id) is not None
-
-
 def _mark(story_id: str, state: str) -> None:
-    """Продвинуть состояние сторис после анализа."""
     with session_scope() as session:
         session.execute(
             update(Story).where(Story.story_id == story_id).values(pipeline_state=state)
         )
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cookies", default=None)
-    ap.add_argument("--cookies-file", default=None)
-    ap.add_argument("--limit", type=int, default=10, help="Сколько фото классифицировать")
-    args = ap.parse_args()
-    configure_logging(json_output=False)
+def _download(url: str, dest: str) -> str:
+    """Скачать медиа. URL живут недолго - одна повторная попытка (§7.3)."""
+    for attempt in (1, 2):
+        try:
+            response = httpx.get(
+                url,
+                timeout=30,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            with open(dest, "wb") as handle:
+                handle.write(response.content)
+            return dest
+        except Exception:  # noqa: BLE001
+            if attempt == 2:
+                raise
+    return dest
 
-    raw = args.cookies or os.environ.get("IG_WEB_COOKIES", "")
-    if args.cookies_file:
-        path = pathlib.Path(args.cookies_file)
-        if not path.is_file():
-            print(f"Файл не найден: {path}")
-            print("\nСоздайте его так (куки: F12 → Application → Cookies → instagram.com):")
-            print("  cat > cookies.txt <<'EOF'")
-            print("  sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...")
-            print("  EOF")
-            return 2
-        raw = path.read_text()
-    if not raw:
-        print("Куки не переданы (--cookies / --cookies-file / IG_WEB_COOKIES)")
-        return 2
 
+# --- классификация ------------------------------------------------------------
+
+
+def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) -> int:
+    """Общая часть для обоих режимов: пул сторис -> оценки."""
     settings = get_settings()
-    transport = WebTransport(raw)
     client = get_ai_client()
     ocr = get_ocr_engine(client=client)
+    print(f"AI: {type(client).__name__} | cheap={settings.cheap_model}\n")
 
-    print(f"AI: {type(client).__name__} | cheap={settings.cheap_model}")
-    print(f"OCR: {getattr(ocr, 'name', '?')}\n")
-
-    tray = transport.reels_tray()
-    users = [e for e in tray.entries if e.is_user_entry]
-    reels = transport.reels_media([e.user_id for e in users if e.user_id])
-    names = {e.user_id: e.user.get("username", str(e.id)) for e in users}
-
-    # Только фото. Видео отсекаются здесь - до скачивания, до AI (§1).
     photos = [
-        (uid, item)
-        for uid, items in reels.items()
-        for item in items
-        if item.is_photo
+        (uid, item) for uid, items in reels.items() for item in items if item.is_photo
     ]
     videos = sum(1 for items in reels.values() for i in items if not i.is_photo)
-    photos.sort(key=lambda p: p[1].taken_at, reverse=True)  # свежие первыми
+    photos.sort(key=lambda p: p[1].taken_at, reverse=True)
 
-    # Дедупликация: та же гарантия, что и в фетчере - INSERT ... ON CONFLICT
-    # (story_id) DO NOTHING. Конфликт означает "уже видели", и сторис больше
-    # никогда не скачивается и не уходит в AI (§7.3).
     fresh: list[tuple[int, Any]] = []
     seen_before = 0
     for uid, item in photos:
         _remember(item, uid, names.get(uid, str(uid)))
-        # Критерий "уже платили" - наличие строки в story_analysis, а не в
-        # stories. Сторис попадает в stories при первом же обнаружении, задолго
-        # до того, как её увидит AI.
         if _already_analysed(item.story_id):
             seen_before += 1
         else:
@@ -205,17 +188,15 @@ def main() -> int:
     )
     if not fresh:
         print("\nНовых фото нет - все уже проходили через AI. Платить второй раз не за что.")
-        transport.close()
         return 0
 
-    print(f"классифицирую {min(args.limit, len(fresh))} самых свежих\n")
+    print(f"классифицирую {min(limit, len(fresh))} самых свежих\n")
     print("=" * 78)
-    photos = fresh
 
     now = dt.datetime.now(dt.UTC)
-    results: list[tuple[str, int, str, str]] = []
+    results: list[tuple[str, int, str]] = []
 
-    for uid, item in photos[: args.limit]:
+    for uid, item in fresh[:limit]:
         name = names.get(uid, str(uid))
         url = item.best_image_url()
         if not url:
@@ -224,11 +205,11 @@ def main() -> int:
         fd, path = tempfile.mkstemp(suffix=".jpg")
         os.close(fd)
         try:
-            transport.download_media(url, path)
+            _download(url, path)
             text = ""
             try:
                 text = ocr.extract_text(path)
-            except Exception:  # noqa: BLE001 - OCR потерять сторис не должен
+            except Exception:  # noqa: BLE001 - OCR не должен терять сторис
                 pass
 
             cheap = client.call_cheap(path, text)
@@ -254,18 +235,21 @@ def main() -> int:
             if text.strip():
                 print(f"      текст: {text.strip()[:70]}")
             if cheap.service_category:
-                print(
-                    f"      категория: {cheap.service_category}"
-                    f"{' | гео: ' + cheap.geography if cheap.geography else ''}"
-                )
+                geo = f" | гео: {cheap.geography}" if cheap.geography else ""
+                print(f"      категория: {cheap.service_category}{geo}")
             if explanation:
                 print(f"      {explanation[:100]}")
+
             _save_analysis(
-                item.story_id, text, cheap, final, explanation,
+                item.story_id,
+                text,
+                cheap,
+                final,
+                explanation,
                 smart_score=(final if route == "smart" else None),
             )
             _mark(item.story_id, "analyzed")
-            results.append((name, final, cheap.service_category or "-", route))
+            results.append((name, final, cheap.service_category or "-"))
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
             print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
             _mark(item.story_id, "failed")
@@ -278,15 +262,80 @@ def main() -> int:
 
     print("=" * 78)
     leads = [r for r in results if r[1] >= settings.approval_score_min]
-    print(f"\nобработано {len(results)} фото | лидов (score >= {settings.approval_score_min}): {len(leads)}")
-    for name, score, category, _ in leads:
+    print(
+        f"\nобработано {len(results)} фото | "
+        f"лидов (score >= {settings.approval_score_min}): {len(leads)}"
+    )
+    for name, score, category in leads:
         print(f"  ЛИД  @{name} — {score}/10 — {category}")
-
     if not leads:
         print("  (это ожидаемо: обычные личные сторис — не заявки на услуги)")
-
-    transport.close()
     return 0
+
+
+# --- точка входа --------------------------------------------------------------
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cookies", default=None)
+    ap.add_argument("--cookies-file", default=None)
+    ap.add_argument("--limit", type=int, default=10, help="Сколько фото классифицировать")
+    ap.add_argument(
+        "--all-accounts",
+        action="store_true",
+        help="Собрать сторис со ВСЕХ аккаунтов с сохранёнными веб-куки",
+    )
+    ap.add_argument("--account", default=None, help="Только этот аккаунт (из web-add)")
+    args = ap.parse_args()
+    configure_logging(json_output=False)
+
+    # Пул аккаунтов: объединение подписок покрывает больше целей, чем любой
+    # аккаунт поодиночке - это §1 применительно к веб-куки.
+    if args.all_accounts or args.account:
+        from stories_monitor.webaccounts import collect_stories, load_accounts
+
+        pool = load_accounts(args.account)
+        if not pool:
+            print("Нет аккаунтов с веб-куки.")
+            print("Добавить: stories web-add <username> --cookies-file cookies.txt")
+            return 2
+        print(
+            f"аккаунтов в пуле: {len(pool)} — "
+            f"{', '.join('@' + a.username for a in pool)}\n"
+        )
+        reels, names, status = collect_stories(pool)
+        for who, state in status.items():
+            print(f"  @{who:22} {state}")
+        print()
+        return _classify(reels, names, args.limit)
+
+    raw = args.cookies or os.environ.get("IG_WEB_COOKIES", "")
+    if args.cookies_file:
+        path = pathlib.Path(args.cookies_file)
+        if not path.is_file():
+            print(f"Файл не найден: {path}")
+            print("\nСоздайте его так (куки: F12 → Application → Cookies → instagram.com):")
+            print("  cat > cookies.txt <<'EOF'")
+            print("  sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...")
+            print("  EOF")
+            return 2
+        raw = path.read_text()
+    if not raw:
+        print("Куки не переданы (--cookies / --cookies-file / IG_WEB_COOKIES)")
+        print("Либо используйте --all-accounts после `stories web-add`.")
+        return 2
+
+    transport = WebTransport(raw)
+    try:
+        tray = transport.reels_tray()
+        users = [e for e in tray.entries if e.is_user_entry]
+        reels = transport.reels_media([e.user_id for e in users if e.user_id])
+        names = {e.user_id: e.user.get("username", str(e.id)) for e in users}
+    finally:
+        transport.close()
+
+    return _classify(reels, names, args.limit)
 
 
 if __name__ == "__main__":

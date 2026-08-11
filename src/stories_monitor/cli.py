@@ -230,6 +230,74 @@ def use_account_cmd(username: str) -> None:
     )
 
 
+@cli.command("web-add")
+@click.argument("username")
+@click.option("--cookies", default=None, help="Строка куки из браузера")
+@click.option("--cookies-file", default=None, help="Файл со строкой куки")
+def web_add_cmd(username: str, cookies: str | None, cookies_file: str | None) -> None:
+    """Сохранить веб-куки для аккаунта (мобильную сессию не трогает)."""
+    import pathlib
+
+    from .transport.web import COOKIE_NAMES
+    from .webaccounts import save_cookies
+
+    raw = cookies or ""
+    if cookies_file:
+        path = pathlib.Path(cookies_file)
+        if not path.is_file():
+            raise click.ClickException(f"файл не найден: {path}")
+        raw = path.read_text()
+    if not raw:
+        raise click.ClickException("укажите --cookies или --cookies-file")
+
+    account = save_cookies(username, raw)
+    click.echo(f"сохранено для @{account.username} (shard {account.shard_id})")
+    click.echo(f"  куки: {len(account.cookies)}/{len(COOKIE_NAMES)}")
+    if account.missing_cookies:
+        click.echo(f"  ОТСУТСТВУЮТ: {', '.join(account.missing_cookies)}")
+        click.echo("  без них ленты обычно отвечают 302")
+
+
+@cli.command("web-list")
+@click.option("--check", is_flag=True, help="Проверить каждый аккаунт живым запросом")
+def web_list_cmd(check: bool) -> None:
+    """Аккаунты с сохранёнными веб-куки."""
+    from .webaccounts import check_alive, load_accounts
+
+    accounts = load_accounts()
+    if not accounts:
+        click.echo("Веб-куки не сохранены ни для одного аккаунта.")
+        click.echo("Добавить: stories web-add <username> --cookies-file cookies.txt")
+        return
+
+    for account in accounts:
+        missing = (
+            f" | нет: {','.join(account.missing_cookies)}"
+            if account.missing_cookies
+            else ""
+        )
+        line = f"  @{account.username:22} shard={account.shard_id}{missing}"
+        if check:
+            alive, detail = check_alive(account)
+            line += f"\n      {'РАБОТАЕТ' if alive else 'НЕ РАБОТАЕТ'}: {detail}"
+        click.echo(line)
+
+    if not check:
+        click.echo("\n--check проверит куки живым запросом")
+
+
+@cli.command("web-remove")
+@click.argument("username")
+def web_remove_cmd(username: str) -> None:
+    """Удалить веб-куки аккаунта (мобильная сессия остаётся)."""
+    from .webaccounts import clear_cookies
+
+    if clear_cookies(username):
+        click.echo(f"веб-куки @{username} удалены")
+    else:
+        click.echo(f"у @{username} не было веб-куки")
+
+
 @cli.command("login-test")
 @click.option("--username", default=None, help="Worker account username")
 @click.option(
