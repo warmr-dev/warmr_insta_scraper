@@ -51,7 +51,15 @@ def main() -> int:
 
     raw = args.cookies or os.environ.get("IG_WEB_COOKIES", "")
     if args.cookies_file:
-        raw = pathlib.Path(args.cookies_file).read_text()
+        path = pathlib.Path(args.cookies_file)
+        if not path.is_file():
+            print(f"Файл не найден: {path}")
+            print("\nСоздайте его так (куки: F12 → Application → Cookies → instagram.com):")
+            print("  cat > cookies.txt <<'EOF'")
+            print("  sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...")
+            print("  EOF")
+            return 2
+        raw = path.read_text()
     if not raw:
         print("Куки не переданы. Укажите --cookies, --cookies-file или IG_WEB_COOKIES.")
         print("Нужны:", ", ".join(COOKIE_NAMES))
