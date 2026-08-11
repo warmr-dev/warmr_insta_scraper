@@ -66,13 +66,13 @@ def main() -> int:
 
     transport = WebTransport(jar)
 
+    # `accounts/current_user/` answers 400 to web cookies even when the feeds
+    # work, so it is a nice-to-have, never a gate.
     try:
         who = transport.whoami()
         print(f"\nаккаунт: @{who or '?'}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"\ncurrent_user не отвечает: {type(exc).__name__}: {exc}")
-        print("Куки, скорее всего, неполные или сессия истекла.")
-        return 1
+    except Exception:  # noqa: BLE001
+        print(f"\nаккаунт: id={jar.get('ds_user_id', '?')} (current_user недоступен - это нормально)")
 
     try:
         tray = transport.reels_tray()
