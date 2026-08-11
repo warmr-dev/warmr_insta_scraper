@@ -30,7 +30,7 @@ from sqlalchemy import update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
 from stories_monitor.config import get_settings  # noqa: E402
-from stories_monitor.db.models import Story, Target  # noqa: E402
+from stories_monitor.db.models import Story, StoryAnalysis, Target  # noqa: E402
 from stories_monitor.db.session import session_scope  # noqa: E402
 from stories_monitor.logging_setup import configure_logging  # noqa: E402
 from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
@@ -80,6 +80,49 @@ def _remember(item: Any, user_id: int, username: str) -> bool:
         ).scalar_one_or_none()
 
     return inserted is not None
+
+
+def _save_analysis(
+    story_id: str,
+    ocr_text: str,
+    cheap: Any,
+    final_score: int,
+    explanation: str,
+    smart_score: int | None = None,
+) -> None:
+    """Сохранить результат анализа. Upsert по story_id - повторный прогон
+    перезаписывает, а не дублирует."""
+    values = {
+        "story_id": story_id,
+        "ocr_text": ocr_text or None,
+        "cheap_score": cheap.score,
+        "cheap_result": cheap.model_dump(mode="json"),
+        "smart_score": smart_score,
+        "final_score": final_score,
+        "service_category": cheap.service_category,
+        "intent_type": (
+            "seeking_contractor" if cheap.seeking_contractor
+            else "purchase_intent" if cheap.explicit_purchase_intent
+            else None
+        ),
+        "ai_explanation": explanation or None,
+        "analyzed_at": dt.datetime.now(dt.UTC),
+    }
+    with session_scope() as session:
+        session.execute(
+            pg_insert(StoryAnalysis)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["story_id"],
+                set_={k: v for k, v in values.items() if k != "story_id"},
+            )
+        )
+
+
+def _already_analysed(story_id: str) -> bool:
+    """Уже прогоняли через AI? Проверяем story_analysis, не stories."""
+    with session_scope() as session:
+        return session.get(StoryAnalysis, story_id) is not None
 
 
 def _mark(story_id: str, state: str) -> None:
@@ -142,10 +185,14 @@ def main() -> int:
     fresh: list[tuple[int, Any]] = []
     seen_before = 0
     for uid, item in photos:
-        if _remember(item, uid, names.get(uid, str(uid))):
-            fresh.append((uid, item))
-        else:
+        _remember(item, uid, names.get(uid, str(uid)))
+        # Критерий "уже платили" - наличие строки в story_analysis, а не в
+        # stories. Сторис попадает в stories при первом же обнаружении, задолго
+        # до того, как её увидит AI.
+        if _already_analysed(item.story_id):
             seen_before += 1
+        else:
+            fresh.append((uid, item))
 
     for uid, items in reels.items():
         for item in items:
@@ -213,6 +260,10 @@ def main() -> int:
                 )
             if explanation:
                 print(f"      {explanation[:100]}")
+            _save_analysis(
+                item.story_id, text, cheap, final, explanation,
+                smart_score=(final if route == "smart" else None),
+            )
             _mark(item.story_id, "analyzed")
             results.append((name, final, cheap.service_category or "-", route))
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон

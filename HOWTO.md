@@ -292,6 +292,8 @@ psql -d stories_monitor -c "select metric, round(sum(value)::numeric,4) from met
 
 ## 9. Как работает AI (§7.4)
 
+> Результаты на реальных данных и разбор оценок — **[CLASSIFICATION.md](CLASSIFICATION.md)**.
+
 Только для **фото**:
 
 1. **OCR** — текст с картинки
