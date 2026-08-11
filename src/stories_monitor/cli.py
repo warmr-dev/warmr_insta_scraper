@@ -145,6 +145,91 @@ def seed_worker_cmd(
     click.echo(json.dumps(report, indent=2, default=str))
 
 
+@cli.command("accounts")
+def accounts_cmd() -> None:
+    """List seeded worker accounts and which one is active in .env."""
+    from sqlalchemy import select
+
+    from .db.models import WorkerAccount
+    from .db.session import session_scope
+
+    active = get_settings().ig_worker_username
+    with session_scope() as session:
+        rows = session.scalars(select(WorkerAccount).order_by(WorkerAccount.id)).all()
+        if not rows:
+            click.echo("No accounts seeded. Run `stories seed-worker`.")
+            return
+        click.echo(f"{'':2} {'id':>3}  {'username':22} {'status':10} {'session':8} bound to")
+        for account in rows:
+            mark = "->" if account.username == active else "  "
+            has_session = "saved" if account.session_json else "-"
+            bound = account.proxy_url or "local IP"
+            click.echo(
+                f"{mark} {account.id:>3}  {account.username:22} {account.status:10} "
+                f"{has_session:8} {bound}"
+            )
+    click.echo("\n-> = active in .env (IG_WORKER_USERNAME)")
+
+
+@cli.command("use-account")
+@click.argument("username")
+def use_account_cmd(username: str) -> None:
+    """Point .env at an already-seeded account, keeping its stored password.
+
+    Credentials live encrypted in the database, so switching never needs the
+    password typed again - and the account's immutable device settings and bound
+    proxy travel with it (SPEC section 8).
+    """
+    import pathlib
+    import re
+
+    from sqlalchemy import select
+
+    from .crypto import SecretBox
+    from .db.models import WorkerAccount
+    from .db.session import session_scope
+
+    with session_scope() as session:
+        account = session.scalars(
+            select(WorkerAccount).where(WorkerAccount.username == username)
+        ).first()
+        if account is None:
+            raise click.ClickException(
+                f"{username} is not seeded. Run `stories seed-worker` for it first."
+            )
+        password = SecretBox().decrypt(account.password_enc)
+        proxy = account.proxy_url or ""
+        has_session = account.session_json is not None
+        status = account.status
+
+    env_path = pathlib.Path(".env")
+    if not env_path.is_file():
+        raise click.ClickException(".env not found")
+
+    text = env_path.read_text()
+    for key, value in (
+        ("IG_WORKER_USERNAME", username),
+        ("IG_WORKER_PASSWORD", password),
+        ("IG_WORKER_PROXY_URL", proxy),
+    ):
+        pattern = rf"^{key}=.*$"
+        replacement = f"{key}={value}"
+        text = (
+            re.sub(pattern, replacement, text, flags=re.M)
+            if re.search(pattern, text, flags=re.M)
+            else text.rstrip("\n") + f"\n{replacement}\n"
+        )
+    env_path.write_text(text)
+    env_path.chmod(0o600)
+
+    click.echo(f"switched to {username} (status={status})")
+    click.echo(f"  bound to     : {proxy or 'local IP'}")
+    click.echo(
+        "  session      : "
+        + ("saved - no login needed" if has_session else "none - run scripts/login_now.py")
+    )
+
+
 @cli.command("login-test")
 @click.option("--username", default=None, help="Worker account username")
 @click.option(
