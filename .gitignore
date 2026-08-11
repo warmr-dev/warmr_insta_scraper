@@ -41,3 +41,7 @@ hiker_stories_pilot_*.jsonl
 *.swp
 .DS_Store
 Thumbs.db
+
+# Browser cookies - never commit
+cookies.txt
+cookies*.txt

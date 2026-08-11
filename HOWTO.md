@@ -205,6 +205,64 @@ TOTAL: 4 photos -> AI pipeline | 2 videos -> skipped (SPEC 1)
 
 ---
 
+## 7b. Веб-путь: сторис через куки браузера
+
+Запасной путь, когда мобильный вход недоступен. Работает на живых данных, но это
+**диагностика, а не продакшн**: веб-API жёстче лимитирован и не умеет продлевать
+сессию сам — истекла, идти в браузер за новыми куки.
+
+### Шаг 1 — взять куки
+
+instagram.com → **F12** → **Application** → **Cookies** → `https://www.instagram.com`
+
+Нужны все семь: `sessionid`, `csrftoken`, `ds_user_id`, `ig_did`, `mid`, `datr`, `rur`.
+Одного `sessionid` **не хватит** — ленты ответят 302.
+
+### Шаг 2 — сохранить в файл
+
+```bash
+cat > cookies.txt <<'EOF'
+sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...
+EOF
+chmod 600 cookies.txt
+```
+
+`cookies*.txt` в `.gitignore` — в репозиторий не попадёт.
+
+### Шаг 3 — запускать
+
+```bash
+# посмотреть сторис: кто, сколько, фото или видео (без AI, бесплатно)
+.venv/bin/python scripts/web_stories.py --cookies-file cookies.txt
+
+# классифицировать через AI
+.venv/bin/python scripts/web_classify.py --cookies-file cookies.txt --limit 20
+```
+
+Скрипт скажет, каких куки не хватает, если что-то забыли.
+
+### Повторные запуски ничего не стоят
+
+Сторис пишутся в БД через `ON CONFLICT (story_id) DO NOTHING`, поэтому одна и та же
+картинка анализируется ровно один раз:
+
+```
+уже анализировали ранее: 45 | новых к анализу: 0
+Новых фото нет - все уже проходили через AI. Платить второй раз не за что.
+```
+
+Это принципиально: при опросе раз в 2 минуты одна сторис попадала бы в трей ~720 раз
+за сутки жизни. Без дедупликации — 720 оплат вместо одной.
+
+### Что смотреть после прогона
+
+```bash
+psql -d stories_monitor -c "select pipeline_state, count(*) from stories group by 1;"
+psql -d stories_monitor -c "select metric, round(sum(value)::numeric,4) from metric_samples where metric like 'ai_%' group by 1;"
+```
+
+---
+
 ## 8. Запуск конвейера
 
 Семь процессов, каждый перезапускается независимо:
