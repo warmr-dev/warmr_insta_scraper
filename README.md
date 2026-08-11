@@ -170,6 +170,11 @@ cheapest way to tune prompts.
 `OCR_ENGINE=vision` routes OCR through the cheap model instead of a local Tesseract binary.
 SPEC 7.4 asks for both to be measured during the pilot; keep the cheaper one.
 
+Live-test results — which accounts worked, proxy findings, session scoping:
+**[FINDINGS.md](FINDINGS.md)** (Russian).
+
+---
+
 ## Open questions — flagged, not guessed
 
 These are unresolved. The code accommodates both answers rather than inventing one.
