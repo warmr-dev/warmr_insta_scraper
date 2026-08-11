@@ -43,6 +43,11 @@ from stories_monitor.db.session import session_scope  # noqa: E402
 from stories_monitor.logging_setup import configure_logging  # noqa: E402
 from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
 
+# Отправка в Slack. Идемпотентность даёт первичный ключ slack_deliveries.story_id:
+# один лид отправляется РОВНО один раз, даже если цикл перезапустится (§7.6).
+from stories_monitor.db.models import SlackDelivery  # noqa: E402
+from stories_monitor.notify.slack import LeadMessage, get_notifier  # noqa: E402
+
 
 # --- сохранение и дедупликация ------------------------------------------------
 
@@ -154,6 +159,58 @@ def _mark(story_id: str, state: str) -> None:
         )
 
 
+def _notify_lead(
+    story_id: str, username: str, score: int, category: str, explanation: str, taken_at: dt.datetime
+) -> bool:
+    """Отправить лид в Slack ровно один раз.
+
+    Строку в slack_deliveries занимаем ДО отправки: первичный ключ по story_id
+    не даст отправить повторно, даже если процесс упадёт между отправкой и
+    записью результата (§7.6).
+    """
+    with session_scope() as session:
+        claimed = session.execute(
+            pg_insert(SlackDelivery)
+            .values(story_id=story_id, status="pending", attempts=0)
+            .on_conflict_do_nothing(index_elements=["story_id"])
+            .returning(SlackDelivery.story_id)
+        ).scalar_one_or_none()
+    if claimed is None:
+        return False  # уже отправляли
+
+    notifier = get_notifier()
+    message = LeadMessage(
+        story_id=story_id,
+        username=username,
+        instagram_url=f"https://instagram.com/{username}",
+        service_category=category or None,
+        final_score=score,
+        ai_explanation=explanation or None,
+        taken_at=taken_at,
+    )
+
+    try:
+        ts = notifier.send(message)
+        with session_scope() as session:
+            session.execute(
+                update(SlackDelivery)
+                .where(SlackDelivery.story_id == story_id)
+                .values(
+                    status="sent", slack_ts=str(ts or ""), attempts=1,
+                    sent_at=dt.datetime.now(dt.UTC),
+                )
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - сбой Slack не должен ронять цикл
+        with session_scope() as session:
+            session.execute(
+                update(SlackDelivery)
+                .where(SlackDelivery.story_id == story_id)
+                .values(status="failed", attempts=1, last_error=str(exc)[:500])
+            )
+        return False
+
+
 def _download(url: str, dest: str) -> str:
     """Скачать медиа. URL живут недолго - одна повторная попытка (§7.3)."""
     for attempt in (1, 2):
@@ -262,6 +319,15 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
             )
             _mark(item.story_id, "analyzed")
             results.append((name, final, cheap.service_category or "-"))
+
+            if final >= settings.approval_score_min:
+                sent = _notify_lead(
+                    item.story_id, name, final,
+                    cheap.service_category or "", explanation,
+                    dt.datetime.fromtimestamp(item.taken_at, tz=dt.UTC),
+                )
+                if sent:
+                    _mark(item.story_id, "sent")
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
             print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
             _mark(item.story_id, "failed")

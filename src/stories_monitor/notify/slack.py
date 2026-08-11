@@ -232,7 +232,14 @@ class StdoutSlackNotifier:
 
 
 def get_notifier() -> SlackNotifier:
-    """Stdout in fixture mode, real Slack otherwise (SPEC section 4)."""
-    if get_settings().is_fixture_mode:
+    """Real Slack when a token is configured, stdout otherwise.
+
+    An absent token is a configuration state, not a failure: the pipeline should
+    still run end to end and show the lead (SPEC section 4). Keying this on the
+    token rather than on IG_TRANSPORT matters because the web path talks to
+    Instagram for real while IG_TRANSPORT stays `fixture`.
+    """
+    settings = get_settings()
+    if settings.is_fixture_mode or not settings.slack_bot_token:
         return StdoutSlackNotifier()
     return LiveSlackNotifier()
