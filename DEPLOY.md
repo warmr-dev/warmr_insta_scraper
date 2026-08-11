@@ -1,5 +1,17 @@
 # Деплой: Supabase + запуск раз в минуту
 
+Два режима, выбор зависит от платформы:
+
+| Платформа | Что запускать | Почему |
+|---|---|---|
+| **Out Plane**, Fly, Render | `run_loop.py` (в `Dockerfile` по умолчанию) | cron нет — процесс должен работать постоянно |
+| Railway, k8s CronJob, systemd | `run_once.py` | есть cron — дешевле: платите только за секунды работы |
+
+`run_loop.py` настраивается переменными `LOOP_INTERVAL_SEC` (по умолчанию 60)
+и `LOOP_PHOTO_LIMIT` (25). Он переживает ошибку в цикле, корректно завершается
+по SIGTERM и разрежает попытки при стойких отказах — если куки мертвы, долбить
+Instagram раз в минуту вредно.
+
 Схема: куки лежат в Supabase, Railway раз в минуту запускает один цикл
 «собрать сторис → классифицировать новые фото → выйти».
 
@@ -46,7 +58,29 @@ DATABASE_URL="..." .venv/bin/python -m stories_monitor.cli web-list --check
 
 ---
 
-## 2. Railway
+## 2. Out Plane
+
+```bash
+outplane login
+
+# GitHub нужно подключить в браузере — из терминала нельзя:
+# https://github.com/apps/out-plane-connect-run/installations/select_target
+
+outplane app create instascraper --repo warmr-dev/warmr_insta_scraper --branch ers
+
+outplane env set DATABASE_URL='postgresql+psycopg://...' \
+                 SECRET_KEY='...' AI_PROVIDER=gemini GEMINI_API_KEY='...' \
+                 CHEAP_MODEL=gemini-flash-lite-latest \
+                 SMART_MODEL=gemini-pro-latest OCR_ENGINE=vision --deploy
+
+outplane logs --follow
+```
+
+Порт открывать не нужно: это фоновый процесс, HTTP он не обслуживает.
+
+---
+
+## 2b. Railway
 
 1. New Project → Deploy from GitHub → выбрать репозиторий, ветку `ers`
 2. Railway увидит `Dockerfile` и `railway.toml` (расписание `* * * * *`)
