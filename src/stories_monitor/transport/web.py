@@ -141,6 +141,15 @@ class WebTransport:
             raise RateLimitedError("web API rate limited (429)")
         if response.status_code == 403:
             raise LoginRequiredError("web API rejected the session (403)")
+        if response.status_code == 400 and path.startswith("feed/"):
+            # Instagram отвечает 400 на ленты, когда сессия больше не
+            # действительна - отдельного "expired" статуса у веб-API нет.
+            # Проверено: тот же ответ приходит и на users/web_profile_info,
+            # то есть дело в сессии, а не в конкретном эндпоинте.
+            raise LoginRequiredError(
+                "web API returned 400 on a feed - the session is no longer valid. "
+                "Скопируйте свежие куки из браузера."
+            )
         if response.status_code >= 400:
             raise TransportError(f"web API {response.status_code} on {path}")
 
