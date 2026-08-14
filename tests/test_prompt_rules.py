@@ -52,3 +52,29 @@ def test_both_prompts_still_demand_json_only():
     for prompt in (CHEAP_SYSTEM_PROMPT, SMART_SYSTEM_PROMPT):
         assert "ONE JSON object" in prompt
         assert "no markdown code fences" in prompt.lower()
+
+
+def test_cheap_prompt_lists_the_allowed_categories():
+    """ТЗ §7: клиент покупает B2B-услуги. Ложные лиды были florist/hookah/retail."""
+    text = CHEAP_SYSTEM_PROMPT
+    for term in ("Meta Ads", "SEO", "HubSpot", "co-packing", "immigration", "CPA"):
+        assert term in text, f"нет приоритетной категории ТЗ §7: {term}"
+
+
+def test_cheap_prompt_names_out_of_scope_categories():
+    """Верная заявка в чужой категории - всё равно не наш лид."""
+    text = CHEAP_SYSTEM_PROMPT.lower()
+    for term in ("plumbing", "florist", "restaurant", "beauty"):
+        assert term in text, f"не назван как вне охвата: {term}"
+
+
+def test_cheap_prompt_covers_spec_auto_rejects():
+    """ТЗ §8: barter, backlinks, partnership-питчи, поиск работы."""
+    text = CHEAP_SYSTEM_PROMPT.lower()
+    for term in ("barter", "backlink", "guest post", "partnership", "resume"):
+        assert term in text, f"нет автоотклонения ТЗ §8: {term}"
+
+
+def test_smart_prompt_applies_the_category_gate_first():
+    """Умная модель тоже обязана отсекать чужие категории."""
+    assert "CATEGORY GATE" in SMART_SYSTEM_PROMPT

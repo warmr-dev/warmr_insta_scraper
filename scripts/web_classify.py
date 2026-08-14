@@ -282,6 +282,9 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 pass
 
             cheap = client.call_cheap(path, text)
+            # Категория - жёсткие ворота (ТЗ §7), не полагаемся на промпт.
+            if not cheap.allowed_category and cheap.score >= settings.approval_score_min:
+                cheap.score = 4
             route = (
                 "reject"
                 if cheap.score < settings.smart_model_score_min

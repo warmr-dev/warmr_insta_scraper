@@ -130,6 +130,27 @@ class Analyzer:
         cheap = self.ai.call_cheap(temp_path, ocr_text)
         record_metric("cheap_model_scores", cheap.score, {})
 
+        # Категория - жёсткие ворота (ТЗ §7). Модель иногда ставит высокую
+        # оценку при allowed_category=false, поэтому не полагаемся на промпт:
+        # верная заявка в чужой категории - всё равно не наш лид.
+        if not cheap.allowed_category:
+            logger.info(
+                "category_not_allowed",
+                story_id=story_id,
+                category=cheap.service_category,
+                model_score=cheap.score,
+            )
+            record_metric("stories_rejected_category", 1, {})
+            self._write_analysis(
+                story_id=story_id, ocr_text=ocr_text, cheap=cheap, smart=None,
+                final_score=min(cheap.score, 4), state=STATE_ANALYZED,
+            )
+            return {
+                "story_id": story_id, "state": STATE_ANALYZED, "decision": "reject",
+                "cheap_score": cheap.score, "final_score": min(cheap.score, 4),
+                "smart_used": False, "reason": "category_not_allowed",
+            }
+
         decision = self.route(cheap.score)
         smart: SmartResult | None = None
 

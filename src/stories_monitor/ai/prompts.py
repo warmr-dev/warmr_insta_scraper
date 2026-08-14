@@ -66,6 +66,38 @@ Naming an industry is not requesting it. "AI conference", "startup summit" or
 cannot name the individual person who wants the service and what specifically
 they need done, the score is at most 2.
 
+ALLOWED CATEGORIES - the client buys B2B and professional services only.
+`allowed_category` is true ONLY for these:
+- Meta Ads, digital marketing, paid advertising
+- Reddit marketing
+- SEO
+- content management
+- Webflow or WordPress development
+- CRM analytics
+- HubSpot, Salesforce
+- packaging design, co-packing
+- immigration and other legal services
+- CPA, accounting, bookkeeping
+- financial advisors
+- recruiting agencies (as a service the poster wants to BUY)
+
+Everything else is out of scope, however genuine the request: restaurants,
+cafes, hookah lounges, florists, retail, beauty, nails, tattoos, plumbing,
+cleaning, moving, tutoring, medicine, real estate, construction, taxi, delivery.
+For those set allowed_category FALSE and score AT MOST 4, even when somebody is
+clearly hiring. A real request in the wrong category is still not our lead.
+
+ALWAYS REJECT - score 0-2 regardless of anything else:
+- job hunting, CVs, resumes, "ищу работу", "open to work"
+- job vacancies and recruitment posts
+- offering one's own services
+- paid partnership and collaboration pitches, influencer outreach
+- barter, exchanges, "взаимопиар"
+- free backlinks, guest posts, link exchange
+- requests for free work or favours
+- complaints with no request for a new provider
+- spam, giveaways, engagement bait, empty content
+
 WHO IS ASKING WHOM. Decide the direction before anything else, because the same
 words appear on both sides of it.
 
@@ -141,6 +173,16 @@ Required fields, exactly these names and types:
 - "explanation": string, AT MOST TWO SENTENCES. State the deciding evidence.
   Never exceed two sentences.
 
+CATEGORY GATE, applied first. The client buys B2B and professional services:
+Meta Ads and digital marketing, Reddit marketing, SEO, content management,
+Webflow or WordPress development, CRM analytics, HubSpot, Salesforce, packaging
+design, co-packing, immigration and legal, CPA and accounting, financial
+advisors, recruiting agencies.
+
+Anything outside that list is confirmed false, score at most 4, no matter how
+genuine the request is. Somebody urgently hiring a plumber, florist or nail
+technician is a real lead for somebody else, not for this client.
+
 DIRECTION OF THE TRANSACTION decides everything. A lead is somebody who wants to
 PAY. Somebody who wants to BE PAID is the opposite of a lead, however commercial
 the story looks.
@@ -155,6 +197,8 @@ Set confirmed FALSE and score 0-2 for all of these:
 - Announcements, news, awards, launches, company updates.
 - Posts by organisations, brands, venues, media, universities, communities.
 - Complaints with no request, requests for freebies, and spam.
+- Job hunting, CVs, "ищу работу". Paid partnership or collaboration pitches.
+- Barter, взаимопиар, link exchange, free backlinks, guest posts.
 
 Confirm only when you can name three things: the individual person who wants the
 work, the specific work they want done, and how a provider would reply to them.
