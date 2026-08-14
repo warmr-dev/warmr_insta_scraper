@@ -29,6 +29,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from stories_monitor.logging_setup import configure_logging, get_logger  # noqa: E402
+from stories_monitor.notify.telegram import (  # noqa: E402
+    alert_cookies_expired,
+    alert_cycle_failing,
+    alert_no_accounts,
+)
 from stories_monitor.webaccounts import collect_stories, load_accounts  # noqa: E402
 
 log = get_logger("run_loop")
@@ -50,6 +55,7 @@ def _cycle(limit: int) -> bool:
     accounts = load_accounts()
     if not accounts:
         log.error("no_accounts", detail="в таблице cookies нет активных строк")
+        alert_no_accounts()
         return False
 
     reels, names, status = collect_stories(accounts)
@@ -61,6 +67,10 @@ def _cycle(limit: int) -> bool:
             accounts=list(status),
             detail="обновите куки в таблице cookies",
         )
+        # Куки продлить из кода нельзя - без уведомления простой заметят
+        # только по пропавшим лидам.
+        expired = [u for u, s in status.items() if "ИСТЕКЛИ" in s]
+        alert_cookies_expired(expired or list(status))
         return False
 
     _classify(reels, names, limit)
@@ -86,6 +96,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - цикл не должен умирать
             consecutive_failures += 1
             log.exception("cycle_failed", error=str(exc)[:200])
+            if consecutive_failures >= 3:
+                alert_cycle_failing(consecutive_failures, str(exc))
 
         elapsed = time.monotonic() - started
 

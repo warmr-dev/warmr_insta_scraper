@@ -56,15 +56,32 @@ COOKIE_NAMES = ("sessionid", "csrftoken", "ds_user_id", "ig_did", "mid", "datr",
 
 
 def parse_cookie_header(raw: str) -> dict[str, str]:
-    """Parse a pasted `document.cookie` string or a DevTools cookie dump.
+    """Parse cookies from any of the shapes a browser hands out.
 
-    Accepts `a=1; b=2` and newline-separated `name<TAB>value` pairs, so a copy
-    from either the console or the Application tab works.
+    Accepts `a=1; b=2`, newline-separated `name<TAB>value`, and the JSON array
+    that cookie-export extensions produce (`[{"name": ..., "value": ...}]`).
+    Supporting all three means nobody has to reformat by hand.
     """
+    import json as _json
+
     cookies: dict[str, str] = {}
     text = (raw or "").strip()
     if not text:
         return cookies
+
+    # JSON export from a cookie-manager extension.
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            parsed = _json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            for entry in parsed:
+                if isinstance(entry, dict) and entry.get("name"):
+                    cookies[str(entry["name"])] = str(entry.get("value", ""))
+            return cookies
+        if isinstance(parsed, dict):
+            return {str(k): str(v) for k, v in parsed.items() if v is not None}
 
     separator = ";" if ";" in text else "\n"
     for chunk in text.split(separator):

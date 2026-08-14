@@ -45,3 +45,5 @@ Thumbs.db
 # Browser cookies - never commit
 cookies.txt
 cookies*.txt
+cookies/
+*_cookies.json

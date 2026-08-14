@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     service_fit_threshold: float = 70.0
     approval_score_min: int = 7
 
+    # --- Telegram (алерты о простое; лиды идут в Slack) ---
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # Одно и то же состояние не шлём чаще - иначе цикл раз в минуту спамит.
+    alert_cooldown_sec: int = 3600
+    # Дублировать найденные лиды в Telegram, а не только в Slack.
+    telegram_send_leads: bool = True
+
     # --- Slack ---
     slack_bot_token: str = ""
     slack_channel: str = "#leads"
