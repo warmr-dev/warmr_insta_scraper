@@ -39,9 +39,12 @@ class Settings(BaseSettings):
     # TEMPORARY: `gemini` is in use because only a Gemini key is available.
     # The pipeline is provider-agnostic behind the AIClient protocol, so moving
     # back is a config change, not a rewrite.
-    ai_provider: Literal["anthropic", "gemini"] = "anthropic"
+    ai_provider: Literal["anthropic", "gemini", "openrouter"] = "anthropic"
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    # OpenRouter: один ключ, любые модели. ВАЖНО: id модели обязан содержать
+    # префикс провайдера ("google/gemini-2.5-flash-lite"), иначе 404.
+    openrouter_api_key: str = ""
     cheap_model: str = "claude-haiku-4-5-20251001"
     smart_model: str = "claude-sonnet-5"
     ocr_engine: Literal["tesseract", "vision"] = "tesseract"
@@ -93,9 +96,10 @@ class Settings(BaseSettings):
     @property
     def ai_api_key(self) -> str:
         """API key for whichever provider is active. Empty means use the fake."""
-        return (
-            self.gemini_api_key if self.ai_provider == "gemini" else self.anthropic_api_key
-        )
+        return {
+            "gemini": self.gemini_api_key,
+            "openrouter": self.openrouter_api_key,
+        }.get(self.ai_provider, self.anthropic_api_key)
 
 
 @lru_cache

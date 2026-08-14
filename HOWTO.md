@@ -94,6 +94,27 @@ CHEAP_MODEL=claude-haiku-4-5-20251001
 SMART_MODEL=claude-sonnet-5
 ```
 
+### OpenRouter
+
+Один ключ на все модели — удобно сравнивать провайдеров, не меняя код.
+
+```bash
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+CHEAP_MODEL=google/gemini-2.5-flash-lite
+SMART_MODEL=google/gemini-2.5-flash
+```
+
+> **Важно:** id модели обязан содержать префикс провайдера.
+> `google/gemini-2.5-flash-lite` — верно, `gemini-2.5-flash-lite` — 404.
+
+Модель должна поддерживать картинки: классификатор шлёт само изображение.
+Проверенные дешёвые варианты с vision: `google/gemini-2.5-flash-lite`,
+`openai/gpt-5-nano`, `google/gemma-3-12b-it`.
+
+Расход берётся из ответа OpenRouter (поле `usage.cost`) — это фактическая
+стоимость, а не наша оценка по прайсу.
+
 ### Прочее
 
 ```bash

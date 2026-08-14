@@ -497,6 +497,207 @@ def _gemini_error_detail(response: Any) -> str:
         return "(no detail)"
 
 
+# --- OpenRouter ---------------------------------------------------------------
+
+
+class OpenRouterAIClient:
+    """OpenRouter backend - one key, any model, same contract as the others.
+
+    Model ids MUST carry the provider prefix (`google/gemini-2.5-flash-lite`,
+    not `gemini-2.5-flash-lite`); a bare name returns 404.
+
+    Uses the OpenAI-compatible chat/completions shape, so the image rides as a
+    `image_url` part with a data: URI rather than Gemini's `inline_data`.
+    """
+
+    _URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self, api_key: str, cheap_model: str, smart_model: str) -> None:
+        import httpx
+
+        self._httpx = httpx
+        self._api_key = api_key
+        self.cheap_model = cheap_model
+        self.smart_model = smart_model
+        self._client = httpx.Client(timeout=90.0)
+
+    # -- public API (identical to the other clients) --
+
+    def call_cheap(self, image_path: str, ocr_text: str) -> CheapResult:
+        return self._call_validated(
+            model=self.cheap_model,
+            stage="cheap",
+            system=CHEAP_SYSTEM_PROMPT,
+            user_text=CHEAP_USER_TEMPLATE.format(
+                ocr_text=ocr_text or "(no text detected)"
+            ),
+            image_path=image_path,
+            schema=CheapResult,
+        )
+
+    def call_smart(
+        self, image_path: str, ocr_text: str, cheap_result: CheapResult
+    ) -> SmartResult:
+        return self._call_validated(
+            model=self.smart_model,
+            stage="smart",
+            system=SMART_SYSTEM_PROMPT,
+            user_text=SMART_USER_TEMPLATE.format(
+                ocr_text=ocr_text or "(no text detected)",
+                cheap_json=cheap_result.model_dump_json(),
+            ),
+            image_path=image_path,
+            schema=SmartResult,
+        )
+
+    def read_text(self, image_path: str) -> str:
+        """Vision OCR through the cheap model (SPEC 7.4 step 1)."""
+        raw = self._chat(
+            model=self.cheap_model,
+            stage="ocr",
+            system=VISION_OCR_SYSTEM_PROMPT,
+            turns=[("user", VISION_OCR_USER_PROMPT)],
+            image_path=image_path,
+            json_mode=False,
+        )
+        return strip_fences(raw)
+
+    # -- internals --
+
+    def _chat(
+        self,
+        *,
+        model: str,
+        stage: str,
+        system: str,
+        turns: list[tuple[str, str]],
+        image_path: str | None,
+        json_mode: bool,
+    ) -> str:
+        """One chat/completions call. The image goes only on the first user turn,
+        so a retry does not re-upload it."""
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        for index, (role, text) in enumerate(turns):
+            if index == 0 and image_path and role == "user":
+                media_type, data = encode_image(image_path)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": text},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media_type};base64,{data}"},
+                            },
+                        ],
+                    }
+                )
+            else:
+                messages.append({"role": role, "content": text})
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": _MAX_TOKENS_CLASSIFY if json_mode else _MAX_TOKENS_OCR,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        try:
+            response = self._client.post(
+                self._URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    # OpenRouter attributes usage to these; harmless if absent.
+                    "HTTP-Referer": "https://github.com/warmr-dev/warmr_insta_scraper",
+                    "X-Title": "stories-monitor",
+                },
+            )
+            response.raise_for_status()
+            body = response.json()
+        except self._httpx.HTTPStatusError as exc:
+            record_metric("ai_call_errors", 1, {"stage": stage, "model": model})
+            detail = exc.response.text[:200]
+            raise AIClientError(
+                f"{stage} model call failed ({exc.response.status_code}): {detail}"
+            ) from exc
+        except self._httpx.HTTPError as exc:
+            record_metric("ai_call_errors", 1, {"stage": stage, "model": model})
+            raise AIClientError(f"{stage} model call failed: {exc}") from exc
+
+        if "error" in body and not body.get("choices"):
+            raise AIClientError(f"{stage} model error: {body['error']}")
+
+        self._record_usage(model, stage, body)
+
+        choices = body.get("choices") or []
+        if not choices:
+            raise AIClientError(f"{stage} model returned no choices")
+        return (choices[0].get("message") or {}).get("content") or ""
+
+    def _record_usage(self, model: str, stage: str, body: dict[str, Any]) -> None:
+        labels = {"stage": stage, "model": model}
+        record_metric("ai_calls", 1, labels)
+        usage = body.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        record_metric("ai_input_tokens", input_tokens, labels)
+        record_metric("ai_output_tokens", output_tokens, labels)
+        # OpenRouter reports the real charge; prefer it over our price table.
+        cost = usage.get("cost")
+        record_metric(
+            "ai_estimated_spend_usd",
+            float(cost) if cost is not None else _estimated_cost_usd(model, input_tokens, output_tokens),
+            labels,
+        )
+
+    def _call_validated(
+        self,
+        *,
+        model: str,
+        stage: str,
+        system: str,
+        user_text: str,
+        image_path: str,
+        schema: type[CheapResult] | type[SmartResult],
+    ) -> Any:
+        """Call, validate, retry ONCE with a JSON-only nudge, then raise (SPEC 7.4)."""
+        turns: list[tuple[str, str]] = [("user", user_text)]
+        raw = self._chat(
+            model=model,
+            stage=stage,
+            system=system,
+            turns=turns,
+            image_path=image_path,
+            json_mode=True,
+        )
+        try:
+            return schema.model_validate(parse_json_object(raw))
+        except (AIClientError, ValidationError) as first_error:
+            record_metric("ai_parse_retries", 1, {"stage": stage, "model": model})
+            logger.warning(
+                "ai_output_invalid_retrying", stage=stage, model=model, error=str(first_error)
+            )
+
+        retry_raw = self._chat(
+            model=model,
+            stage=stage,
+            system=system,
+            turns=[*turns, ("assistant", raw or "(empty)"), ("user", RETRY_NUDGE)],
+            image_path=image_path,
+            json_mode=True,
+        )
+        try:
+            return schema.model_validate(parse_json_object(retry_raw))
+        except (AIClientError, ValidationError) as exc:
+            record_metric("ai_parse_failures", 1, {"stage": stage, "model": model})
+            raise AIClientError(
+                f"{stage} model output failed validation twice: {exc}"
+            ) from exc
+
+
 # --- deterministic fake -----------------------------------------------------
 
 
@@ -608,9 +809,10 @@ def get_ai_client(force_fake: bool | None = None) -> AIClient:
                 cheap_model=settings.cheap_model,
                 smart_model=settings.smart_model,
             )
-            client_cls = (
-                GeminiAIClient if settings.ai_provider == "gemini" else AnthropicAIClient
-            )
+            client_cls = {
+                "gemini": GeminiAIClient,
+                "openrouter": OpenRouterAIClient,
+            }.get(settings.ai_provider, AnthropicAIClient)
             _client = client_cls(
                 api_key=settings.ai_api_key,
                 cheap_model=settings.cheap_model,
