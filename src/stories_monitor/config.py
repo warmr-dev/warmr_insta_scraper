@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     service_fit_threshold: float = 70.0
     approval_score_min: int = 7
 
+    # --- Приоритизация целей (ТЗ §5: неактивных проверять реже) ---
+    priority_enabled: bool = True
+    # Сколько фото должно пройти без сигнала, прежде чем считать цель пустой.
+    priority_min_samples: int = 8
+    # Даже "пустая" цель получает шанс раз в N часов - люди меняют поведение.
+    priority_recheck_hours: int = 24
+
     # --- Telegram (алерты о простое; лиды идут в Slack) ---
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

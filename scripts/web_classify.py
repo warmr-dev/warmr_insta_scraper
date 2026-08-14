@@ -41,6 +41,7 @@ from stories_monitor.config import get_settings  # noqa: E402
 from stories_monitor.db.models import Story, StoryAnalysis, Target  # noqa: E402
 from stories_monitor.db.session import session_scope  # noqa: E402
 from stories_monitor.logging_setup import configure_logging  # noqa: E402
+from stories_monitor.priority import filter_photos  # noqa: E402
 from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
 
 # Отправка в Slack. Идемпотентность даёт первичный ключ slack_deliveries.story_id:
@@ -251,10 +252,20 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
     fresh = [(uid, item) for uid, item in photos if item.story_id not in analysed]
     seen_before = len(photos) - len(fresh)
 
+    # Приоритизация (ТЗ §5): цели, стабильно не дающие лидов, пропускаем.
+    # Замерено: из 15 аккаунтов с анализом лид дал один, 51 фото - впустую.
+    before_priority = len(fresh)
+    fresh, skipped_reasons = filter_photos(fresh, names)
+    deprioritised = before_priority - len(fresh)
+
     print(
         f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)\n"
         f"уже анализировали ранее: {seen_before} | новых к анализу: {len(fresh)}"
     )
+    if deprioritised:
+        print(f"пропущено по приоритету: {deprioritised} (цели без лидов)")
+        for reason, count in sorted(skipped_reasons.items(), key=lambda x: -x[1])[:3]:
+            print(f"   {count:>3} × {reason}")
     if not fresh:
         print("\nНовых фото нет - все уже проходили через AI. Платить второй раз не за что.")
         return 0
