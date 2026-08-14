@@ -39,8 +39,64 @@ Required fields, exactly these names and types:
 - "email_visible": string or null. An email address literally visible in the image
   or OCR text. Never guess or construct one.
 
+A LEAD IS ONE PERSON WITH ONE NEED. Before scoring above 4, check all three:
+1. WHO posted - an individual, not an organisation, brand, venue, media outlet,
+   university, community, coworking space or event page. An account that exists
+   to promote a business or an event is never the lead itself.
+2. WHAT they want - a specific service for themselves, right now. Not a topic,
+   not an industry, not a subject someone is talking about.
+3. HOW someone would respond - there is a person to reply to. An announcement
+   with a registration link is not a person to reply to.
+
+THESE ARE NOT LEADS, whatever words appear in the image. Score them 0-2 and set
+seeking_contractor and explicit_purchase_intent to FALSE:
+- Reposts and shared content. If the story is somebody else's post, poster, flyer
+  or screenshot, the poster is amplifying it, not requesting anything.
+- Events: conferences, meetups, hackathons, workshops, webinars, demo days,
+  festivals. A tech conference is not a request for software development.
+- Job vacancies, hiring posts and recruitment. A company hiring staff is not a
+  customer buying a service.
+- Courses, bootcamps, education, and calls for applications or registration.
+- Announcements, news, awards, launches, partnerships, and company updates.
+- Anything with "register", "apply", "join us", "tickets", "sign up",
+  "we're hiring", "открыт набор", "регистрация", "вакансия".
+
+Naming an industry is not requesting it. "AI conference", "startup summit" or
+"IT forum" mention a field without anybody asking to hire anyone in it. If you
+cannot name the individual person who wants the service and what specifically
+they need done, the score is at most 2.
+
+WHO IS ASKING WHOM. Decide the direction before anything else, because the same
+words appear on both sides of it.
+
+"Write to me", "DM me", "пишите", "пишите заказы", "принимаю заказы", "звоните",
+"приму заявки" mean the poster is INVITING messages. They are the seller, taking
+orders. That is is_offering_services = true, seeking_contractor = FALSE, score
+0-2.
+
+The poster is a LEAD only when THEY are the one who needs something done and
+would be paying for it: "нужен сантехник", "ищу мастера", "посоветуйте",
+"кто может сделать", "need a plumber", "looking for", "can anyone recommend".
+
+Test it this way: after reading the story, who sends the next message? If
+strangers message the poster, the poster is selling. If the poster would message
+a provider, the poster is a lead.
+
+THE SCORE MUST FOLLOW THE FLAGS. This is arithmetic, not judgement:
+- If seeking_contractor is false AND explicit_purchase_intent is false, the score
+  is AT MOST 2. No exceptions. A story where nobody is asking to hire or buy is
+  not a lead, however commercial, professional or well-produced it looks.
+- If is_offering_services, is_spam, asking_for_free or complaint_only is true,
+  the score is AT MOST 2.
+- A score of 7 or more REQUIRES seeking_contractor or explicit_purchase_intent
+  to be true, and requires you to be able to name the specific work wanted.
+
+Score the request, not the subject. A polished photo of a kitchen scores 0 unless
+somebody is asking for a kitchen fitter.
+
 SCORING GUIDE:
-- 0-2: not a lead. Personal life, memes, reposts, spam, self-promotion.
+- 0-2: not a lead. Personal life, memes, reposts, spam, self-promotion, events,
+  announcements, vacancies, courses, or anything posted by an organisation.
 - 3-4: vague or hypothetical interest, no actionable request.
 - 5-6: plausible lead but ambiguous - unclear need, unclear intent, or unclear
   whether the poster is asking or offering.
@@ -85,9 +141,28 @@ Required fields, exactly these names and types:
 - "explanation": string, AT MOST TWO SENTENCES. State the deciding evidence.
   Never exceed two sentences.
 
-Be strict. Someone advertising their own services, complaining without asking for a
-new provider, asking for something free, or posting spam is not a lead: set
-confirmed false and score it low."""
+DIRECTION OF THE TRANSACTION decides everything. A lead is somebody who wants to
+PAY. Somebody who wants to BE PAID is the opposite of a lead, however commercial
+the story looks.
+
+Set confirmed FALSE and score 0-2 for all of these:
+- Offering, selling, or taking orders. "Пишите заказы", "принимаю заказы",
+  "DM to order", "shopping in X, write me" - the poster is the seller.
+- Reposts and shared content: somebody else's poster, flyer or screenshot.
+- Events: conferences, meetups, hackathons, workshops, demo days, festivals.
+- Job vacancies and recruitment. A company hiring staff is not buying a service.
+- Courses, education, calls for applications, registration drives.
+- Announcements, news, awards, launches, company updates.
+- Posts by organisations, brands, venues, media, universities, communities.
+- Complaints with no request, requests for freebies, and spam.
+
+Confirm only when you can name three things: the individual person who wants the
+work, the specific work they want done, and how a provider would reply to them.
+If any of the three is missing, confirmed is false.
+
+Do not be swayed because the first-pass score was high, or because an industry is
+named. Naming a field is not requesting it. When genuinely torn, refuse: a missed
+lead costs one opportunity, a false lead wastes a vendor's time and trust."""
 
 
 SMART_USER_TEMPLATE = """\
