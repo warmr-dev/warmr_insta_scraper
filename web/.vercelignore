@@ -1,0 +1,10 @@
+# Всё, что относится к Python-скраперу: Vercel собирает только Next.js из web/.
+# Root Directory в настройках Vercel должен быть "web".
+../src
+../scripts
+../migrations
+../tests
+../fixtures
+../.venv
+../pyproject.toml
+../Dockerfile

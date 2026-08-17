@@ -11,6 +11,18 @@
 
 [build]
 builder = "dockerfile"
+# Не пересобирать Python из-за правок в дашборде. Без этого фильтра любой
+# коммит в web/ перезапускал бы скрапер, теряя текущий цикл сбора.
+watchPatterns = [
+  "src/**",
+  "scripts/**",
+  "migrations/**",
+  "fixtures/**",
+  "pyproject.toml",
+  "Dockerfile",
+  "alembic.ini",
+  "railway.toml",
+]
 
 [deploy]
 # run_loop.py сам держит интервал (LOOP_INTERVAL_SEC, по умолчанию 60с),

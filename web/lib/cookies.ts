@@ -1,0 +1,132 @@
+/**
+ * Cookie parsing and session checks. Server-only.
+ *
+ * The seven cookies below are all required: without ig_did/mid/datr/rur the
+ * Instagram feed endpoints answer 302 - measured, not assumed.
+ */
+
+export const COOKIE_NAMES = [
+  "sessionid",
+  "csrftoken",
+  "ds_user_id",
+  "ig_did",
+  "mid",
+  "datr",
+  "rur",
+] as const;
+
+export type CookieJar = Partial<Record<string, string>>;
+
+/**
+ * Accepts every shape a browser hands out: the JSON array a cookie-export
+ * extension produces, a plain object, and an `a=1; b=2` header string. Nobody
+ * should have to reformat cookies by hand to get back online.
+ */
+export function parseCookies(raw: string): CookieJar {
+  const text = raw.trim();
+  if (!text) return {};
+
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        const jar: CookieJar = {};
+        for (const entry of parsed) {
+          if (entry && typeof entry.name === "string") {
+            jar[entry.name] = String(entry.value ?? "");
+          }
+        }
+        return jar;
+      }
+      if (parsed && typeof parsed === "object") {
+        const jar: CookieJar = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v != null) jar[k] = String(v);
+        }
+        return jar;
+      }
+    } catch {
+      // Fall through to the header-string parser.
+    }
+  }
+
+  const jar: CookieJar = {};
+  for (const chunk of text.split(text.includes(";") ? ";" : "\n")) {
+    const piece = chunk.trim();
+    if (!piece) continue;
+    const sep = piece.includes("=") ? "=" : "\t";
+    const idx = piece.indexOf(sep);
+    if (idx <= 0) continue;
+    jar[piece.slice(0, idx).trim()] = piece.slice(idx + 1).trim();
+  }
+  return jar;
+}
+
+export function missingCookies(jar: CookieJar): string[] {
+  return COOKIE_NAMES.filter((name) => !jar[name]);
+}
+
+export type SessionCheck = {
+  alive: boolean;
+  detail: string;
+  trayEntries?: number;
+};
+
+/**
+ * Ask Instagram whether the session still works, using the endpoint we actually
+ * depend on. `accounts/current_user/` answers 400 to browser cookies even when
+ * the feeds work, so it is useless as a health check.
+ */
+export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
+  const cookieHeader = Object.entries(jar)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
+
+  try {
+    const response = await fetch(
+      "https://www.instagram.com/api/v1/feed/reels_tray/",
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "X-IG-App-ID": "936619743392459",
+          "X-CSRFToken": jar.csrftoken ?? "",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: "https://www.instagram.com/",
+          Cookie: cookieHeader,
+        },
+        redirect: "manual",
+        cache: "no-store",
+      },
+    );
+
+    if (response.status === 200) {
+      const body = await response.json();
+      const tray = Array.isArray(body?.tray) ? body.tray : [];
+      const users = tray.filter((t: { id?: string }) => /^\d+$/.test(String(t?.id)));
+      return {
+        alive: true,
+        detail: `${tray.length} tray entries, ${users.length} with live stories`,
+        trayEntries: tray.length,
+      };
+    }
+
+    // 302 and 400 both mean the session is no longer valid for feeds. Instagram
+    // has no distinct "expired" status on the web API.
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      return { alive: false, detail: "Redirected to login — session expired" };
+    }
+    if (response.status === 400) {
+      return { alive: false, detail: "400 on feed — session no longer valid" };
+    }
+    if (response.status === 429) {
+      return { alive: false, detail: "Rate limited (429) — try again later" };
+    }
+    return { alive: false, detail: `HTTP ${response.status}` };
+  } catch (error) {
+    return {
+      alive: false,
+      detail: error instanceof Error ? error.message.slice(0, 120) : "request failed",
+    };
+  }
+}

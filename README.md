@@ -41,6 +41,25 @@ stdout.
 
 ---
 
+## Admin dashboard
+
+A Next.js dashboard lives in `web/` and reads the same Supabase database.
+Sessions, leads, per-target activity, funnel and cost. See `web/README.md`.
+
+The two deploy independently and must stay that way:
+
+| | Deploys from | Trigger |
+|---|---|---|
+| Scraper (Python) | repo root, `Dockerfile` | changes under `src/ scripts/ migrations/ fixtures/` |
+| Dashboard (Next.js) | `web/`, Vercel Root Directory = `web` | any push |
+
+`web/` is in `.dockerignore` and absent from every `COPY` in the `Dockerfile`, so
+it never enters the Python image. `railway.toml` sets `watchPatterns`, so editing
+the dashboard does **not** rebuild the scraper - without that filter every
+dashboard commit would restart collection mid-cycle.
+
+---
+
 ## Processes
 
 Seven long-running processes. Each is independently restartable and picks up state from

@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Dark by default: this is an operations dashboard, usually open alongside logs. */
+:root {
+  color-scheme: dark;
+}

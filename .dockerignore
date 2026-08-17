@@ -9,3 +9,12 @@ cookies*.txt
 .env
 probe_output/
 tmp_media/
+
+# Админ-дашборд (Next.js) деплоится на Vercel, а не сюда. Dockerfile копирует
+# только src/ scripts/ migrations/ fixtures/, поэтому web/ и так не попадёт в
+# образ - строка ниже фиксирует это намерение, а не полагается на совпадение.
+web/
+node_modules/
+.next/
+downloaded_stories/
+cookies/
