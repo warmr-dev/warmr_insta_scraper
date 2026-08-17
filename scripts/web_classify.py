@@ -301,9 +301,21 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 pass
 
             cheap = client.call_cheap(path, text)
-            # Категория - жёсткие ворота (ТЗ §7), не полагаемся на промпт.
-            if not cheap.allowed_category and cheap.score >= settings.approval_score_min:
-                cheap.score = 4
+
+            # Категория - жёсткие ворота (ТЗ §7). Проверяем ДО маршрутизации:
+            # реальный случай - "поеду в UNIQLO, пишите заказы" получил от
+            # дешёвой модели 5 при allowed_category=false, ушёл в умную модель,
+            # та подняла до 8, и ворота уже не применялись.
+            if not cheap.allowed_category:
+                print(
+                    f"    @{name:20} категория вне охвата (§7) — оценка {cheap.score} → 0"
+                )
+                cheap.score = 0
+                _save_analysis(item.story_id, text, cheap, 0, "Category outside the allowed list (spec 7)")
+                _mark(item.story_id, "analyzed")
+                results.append((name, 0, cheap.service_category or "-"))
+                continue
+
             route = (
                 "reject"
                 if cheap.score < settings.smart_model_score_min
@@ -317,6 +329,16 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 smart = client.call_smart(path, text, cheap)
                 final = smart.final_score
                 explanation = smart.explanation
+                # Умная модель не может превратить "не заявку" в лид. Она уже
+                # поднимала 5 до 8 на сторис, где автор ПРИНИМАЛ заказы -
+                # дешёвая модель была права, а её вердикт проигнорировали.
+                if not (cheap.seeking_contractor or cheap.explicit_purchase_intent):
+                    if final >= settings.approval_score_min:
+                        print(
+                            f"    @{name:20} умная модель дала {final}, но заявки нет "
+                            f"(seeking=False, intent=False) → 4"
+                        )
+                        final = 4
 
             flag = "ЛИД" if final >= settings.approval_score_min else "   "
             print(

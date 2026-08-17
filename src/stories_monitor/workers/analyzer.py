@@ -161,6 +161,21 @@ class Analyzer:
             smart = self.ai.call_smart(temp_path, ocr_text, cheap)
             final_score = smart.final_score
             record_metric("smart_model_invocations", 1, {})
+            # Умная модель не может превратить "не заявку" в лид. Реальный
+            # случай: сторис "поеду в UNIQLO, пишите заказы" - дешёвая модель
+            # верно дала seeking_contractor=false, умная подняла оценку до 8.
+            if (
+                final_score >= self.settings.approval_score_min
+                and not (cheap.seeking_contractor or cheap.explicit_purchase_intent)
+            ):
+                logger.info(
+                    "smart_override_blocked",
+                    story_id=story_id,
+                    smart_score=final_score,
+                    detail="нет ни seeking_contractor, ни purchase_intent",
+                )
+                record_metric("smart_override_blocked", 1, {})
+                final_score = 4
         else:  # accept - 7+ skips the smart model entirely (SPEC 7.4)
             final_score = cheap.score
             record_metric("stories_accepted_cheap", 1, {})

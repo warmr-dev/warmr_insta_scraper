@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 from stories_monitor.ai.prompts import CHEAP_SYSTEM_PROMPT, SMART_SYSTEM_PROMPT
 
 
@@ -107,3 +109,84 @@ def test_placeholder_image_url_is_rejected():
         ]
     ).best_image_url()
     assert chosen == real
+
+
+def test_smart_model_cannot_invent_a_lead(monkeypatch):
+    """Умная модель не превращает "не заявку" в лид.
+
+    Реальный случай: сторис "Скоро поеду в UNIQLO, пишите заказы" - дешёвая
+    модель верно дала score=5, seeking_contractor=false, allowed_category=false.
+    Умная подняла до 8, и лид ушёл в дашборд. Автор ПРИНИМАЕТ заказы, то есть
+    продаёт, а одежда вне списка категорий ТЗ §7.
+    """
+    from stories_monitor.ai.schemas import CheapResult, SmartResult
+    from stories_monitor.workers.analyzer import Analyzer
+
+    cheap = CheapResult(
+        score=5,
+        explicit_purchase_intent=False,
+        seeking_contractor=False,
+        allowed_category=True,  # категорию проверяет отдельный тест
+        is_spam=False,
+        is_offering_services=False,
+        asking_for_free=False,
+        complaint_only=False,
+        service_category=None,
+        geography=None,
+        email_visible=None,
+    )
+    smart = SmartResult(
+        confirmed=True,
+        final_score=8,
+        service_category=None,
+        intent_type=None,
+        explanation="An offer to purchase items for others.",
+    )
+
+    class FakeAI:
+        def call_cheap(self, *_a, **_k):
+            return cheap
+
+        def call_smart(self, *_a, **_k):
+            return smart
+
+        def read_text(self, *_a, **_k):
+            return ""
+
+    class NullOCR:
+        name = "null"
+
+        def extract_text(self, _p):
+            return ""
+
+    analyzer = Analyzer(ai_client=FakeAI(), ocr_engine=NullOCR(), queue=object())
+
+    written: dict[str, object] = {}
+    monkeypatch.setattr(analyzer, "_write_analysis", lambda **kw: written.update(kw))
+    monkeypatch.setattr(analyzer, "_set_state", lambda *_a: None)
+    monkeypatch.setattr(analyzer, "bizcheck_queue", type("Q", (), {"push": lambda *_: None})())
+
+    result = analyzer._analyze("story-uniqlo", "/dev/null")
+
+    assert result["final_score"] < 7, (
+        "умная модель подняла оценку до лида, хотя нет ни seeking_contractor, "
+        "ни explicit_purchase_intent"
+    )
+    assert written.get("final_score", 99) < 7
+
+
+def test_category_gate_runs_before_the_smart_model():
+    """Ворота по категории должны стоять ДО умной модели.
+
+    Иначе сторис с оценкой 5 и allowed_category=false уходит в умную модель,
+    та поднимает до 8, и ворота уже не применяются - ровно так UNIQLO-сторис
+    и стала лидом.
+    """
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "scripts/web_classify.py"
+    ).read_text()
+
+    gate = source.index("not cheap.allowed_category")
+    smart_call = source.index("client.call_smart")
+    assert gate < smart_call, "проверка категории стоит после вызова умной модели"
