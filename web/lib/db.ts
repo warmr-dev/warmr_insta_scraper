@@ -23,31 +23,34 @@ const connectionString = process.env.DATABASE_URL?.replace(
   "postgresql://",
 );
 
-let pool: Pool | null = null;
+// Held on globalThis rather than in a module variable. Next.js isolates module
+// state between routes, so a per-module pool meant each route opened its own
+// connections and paid a fresh TLS handshake to Sydney - about a second per
+// page, even when the query result was already cached.
+const globalForPool = globalThis as unknown as { __warmrPool?: Pool };
 
 function getPool(): Pool {
   if (!connectionString) {
     throw new Error("DATABASE_URL is not set");
   }
-  if (!pool) {
-    pool = new Pool({
+
+  if (!globalForPool.__warmrPool) {
+    globalForPool.__warmrPool = new Pool({
       connectionString,
-      // The database is in Sydney: ~2.5s per round-trip from here, and a new
-      // connection costs a TLS handshake on top. Two things follow.
-      //
-      // The pool must fit the widest page: Overview issues 4 queries in
-      // parallel, and a smaller pool would serialise the surplus, adding a
-      // whole round-trip per queued query.
-      max: 8,
+      // Supabase's pooler caps concurrent connections, and exceeding it gives
+      // ECONNRESET rather than a queue - observed at 20 active connections.
+      // Keep this small and let queries wait for a free client instead: the
+      // wait is cheaper than a refused connection.
+      max: 4,
       // Keep connections alive between page views. At 10s they expired between
       // navigations, so every tab switch paid for a fresh handshake.
       idleTimeoutMillis: 5 * 60_000,
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
-      ssl: { rejectUnauthorized: false },
     });
   }
-  return pool;
+
+  return globalForPool.__warmrPool;
 }
 
 export async function query<T = Record<string, unknown>>(
