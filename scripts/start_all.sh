@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-alembic upgrade head
+python -m alembic upgrade head
 
 pids=()
 for worker in poller fetcher analyzer bizcheck notifier follower warden; do
-  stories "$worker" &
+  python -m stories_monitor.cli "$worker" &
   pids+=("$!")
 done
 
