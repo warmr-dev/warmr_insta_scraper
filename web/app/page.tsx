@@ -11,6 +11,8 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function OverviewPage() {
+  // Four parallel queries, not four sequential ones: at ~2.5s per round-trip to
+  // Sydney that is the difference between 3s and 10s on this page.
   const [overview, daily, states, scores] = await Promise.all([
     getOverview(),
     getDailyActivity(14),

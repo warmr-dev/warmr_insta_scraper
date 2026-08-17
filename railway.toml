@@ -27,5 +27,7 @@ watchPatterns = [
 [deploy]
 # run_loop.py сам держит интервал (LOOP_INTERVAL_SEC, по умолчанию 60с),
 # поэтому cron не нужен: процесс работает постоянно.
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 10
+# "always", а не "on_failure": по SIGTERM цикл выходит с кодом 0 (штатное
+# завершение), и on_failure такой выход перезапускать не станет - процесс
+# просто останется остановленным до следующего деплоя.
+restartPolicyType = "always"

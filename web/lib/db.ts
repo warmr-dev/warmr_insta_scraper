@@ -32,11 +32,18 @@ function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString,
-      // Supabase's pooler terminates idle connections; keep the pool small so a
-      // serverless function does not hold more than it needs.
-      max: 3,
-      idleTimeoutMillis: 10_000,
+      // The database is in Sydney: ~2.5s per round-trip from here, and a new
+      // connection costs a TLS handshake on top. Two things follow.
+      //
+      // The pool must fit the widest page: Overview issues 4 queries in
+      // parallel, and a smaller pool would serialise the surplus, adding a
+      // whole round-trip per queued query.
+      max: 8,
+      // Keep connections alive between page views. At 10s they expired between
+      // navigations, so every tab switch paid for a fresh handshake.
+      idleTimeoutMillis: 5 * 60_000,
       connectionTimeoutMillis: 15_000,
+      keepAlive: true,
       ssl: { rejectUnauthorized: false },
     });
   }
