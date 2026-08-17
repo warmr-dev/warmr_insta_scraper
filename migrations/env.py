@@ -7,7 +7,6 @@ stories_monitor.config.Settings, which sources DATABASE_URL from the environment
 
 from __future__ import annotations
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -20,7 +19,11 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from stories_monitor.config import get_settings  # noqa: E402
+from stories_monitor.config import (  # noqa: E402
+    get_settings,
+    normalize_database_url,
+    resolve_database_url_from_env,
+)
 from stories_monitor.db.models import Base  # noqa: E402
 
 config = context.config
@@ -32,11 +35,14 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    """Explicit -x db_url override wins, then settings (which reads DATABASE_URL)."""
+    """Explicit -x db_url override wins, then Railway/Heroku env vars, then settings."""
     override = context.get_x_argument(as_dictionary=True).get("db_url")
     if override:
-        return override
-    return os.environ.get("DATABASE_URL") or get_settings().database_url
+        return normalize_database_url(override)
+    resolved = resolve_database_url_from_env()
+    if resolved:
+        return resolved
+    return get_settings().database_url
 
 
 def run_migrations_offline() -> None:

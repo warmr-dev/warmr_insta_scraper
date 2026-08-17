@@ -497,6 +497,204 @@ def _gemini_error_detail(response: Any) -> str:
         return "(no detail)"
 
 
+# --- OpenRouter -------------------------------------------------------------
+
+
+class OpenRouterAIClient:
+    """OpenRouter backend (OpenAI-compatible chat completions API)."""
+
+    _BASE = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self, api_key: str, cheap_model: str, smart_model: str) -> None:
+        import httpx
+
+        self._httpx = httpx
+        self._api_key = api_key
+        self.cheap_model = cheap_model
+        self.smart_model = smart_model
+        self._client = httpx.Client(timeout=60.0)
+
+    def call_cheap(self, image_path: str, ocr_text: str) -> CheapResult:
+        user_text = CHEAP_USER_TEMPLATE.format(ocr_text=ocr_text or "(no text detected)")
+        return self._call_validated(
+            model=self.cheap_model,
+            stage="cheap",
+            system=CHEAP_SYSTEM_PROMPT,
+            user_text=user_text,
+            image_path=image_path,
+            schema=CheapResult,
+        )
+
+    def call_smart(
+        self, image_path: str, ocr_text: str, cheap_result: CheapResult
+    ) -> SmartResult:
+        user_text = SMART_USER_TEMPLATE.format(
+            ocr_text=ocr_text or "(no text detected)",
+            cheap_json=cheap_result.model_dump_json(),
+        )
+        return self._call_validated(
+            model=self.smart_model,
+            stage="smart",
+            system=SMART_SYSTEM_PROMPT,
+            user_text=user_text,
+            image_path=image_path,
+            schema=SmartResult,
+        )
+
+    def read_text(self, image_path: str) -> str:
+        messages = [self._user_message(image_path, VISION_OCR_USER_PROMPT)]
+        text = self._create(
+            model=self.cheap_model,
+            stage="ocr",
+            system=VISION_OCR_SYSTEM_PROMPT,
+            messages=messages,
+            max_tokens=_MAX_TOKENS_OCR,
+            json_mode=False,
+        )
+        return strip_fences(text)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _user_message(self, image_path: str, text: str) -> dict[str, Any]:
+        media_type, data = encode_image(image_path)
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{data}"},
+                },
+            ],
+        }
+
+    def _create(
+        self,
+        *,
+        model: str,
+        stage: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        json_mode: bool,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "messages": [{"role": "system", "content": system}, *messages],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        try:
+            response = self._client.post(self._BASE, json=payload, headers=self._headers())
+            response.raise_for_status()
+            body = response.json()
+        except self._httpx.HTTPStatusError as exc:
+            record_metric("ai_call_errors", 1, {"stage": stage, "model": model})
+            detail = _openrouter_error_detail(exc.response)
+            raise AIClientError(
+                f"{stage} model call failed ({exc.response.status_code}): {detail}"
+            ) from exc
+        except self._httpx.HTTPError as exc:
+            record_metric("ai_call_errors", 1, {"stage": stage, "model": model})
+            raise AIClientError(f"{stage} model call failed: {exc}") from exc
+
+        self._record_usage(model, stage, body)
+
+        choices = body.get("choices") or []
+        if not choices:
+            raise AIClientError(f"{stage} model returned no choices")
+
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") for part in content if part.get("type") == "text"
+            )
+        return str(content)
+
+    def _record_usage(self, model: str, stage: str, body: dict[str, Any]) -> None:
+        labels = {"stage": stage, "model": model}
+        record_metric("ai_calls", 1, labels)
+
+        usage = body.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        record_metric("ai_input_tokens", input_tokens, labels)
+        record_metric("ai_output_tokens", output_tokens, labels)
+        record_metric(
+            "ai_estimated_spend_usd",
+            _estimated_cost_usd(model, input_tokens, output_tokens),
+            labels,
+        )
+
+    def _call_validated(
+        self,
+        *,
+        model: str,
+        stage: str,
+        system: str,
+        user_text: str,
+        image_path: str,
+        schema: type[CheapResult] | type[SmartResult],
+    ) -> Any:
+        messages = [self._user_message(image_path, user_text)]
+
+        raw = self._create(
+            model=model,
+            stage=stage,
+            system=system,
+            messages=messages,
+            max_tokens=_MAX_TOKENS_CLASSIFY,
+            json_mode=True,
+        )
+        try:
+            return schema.model_validate(parse_json_object(raw))
+        except (AIClientError, ValidationError) as first_error:
+            record_metric("ai_parse_retries", 1, {"stage": stage, "model": model})
+            logger.warning(
+                "ai_output_invalid_retrying", stage=stage, model=model, error=str(first_error)
+            )
+
+        retry_messages = [
+            *messages,
+            {"role": "assistant", "content": raw or "(empty)"},
+            {"role": "user", "content": RETRY_NUDGE},
+        ]
+        retry_raw = self._create(
+            model=model,
+            stage=stage,
+            system=system,
+            messages=retry_messages,
+            max_tokens=_MAX_TOKENS_CLASSIFY,
+            json_mode=True,
+        )
+        try:
+            return schema.model_validate(parse_json_object(retry_raw))
+        except (AIClientError, ValidationError) as exc:
+            record_metric("ai_parse_failures", 1, {"stage": stage, "model": model})
+            raise AIClientError(
+                f"{stage} model output failed validation twice: {exc}"
+            ) from exc
+
+
+def _openrouter_error_detail(response: Any) -> str:
+    try:
+        body = response.json()
+        error = body.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message", ""))[:200]
+        return str(error)[:200]
+    except Exception:  # noqa: BLE001 - error reporting must never raise
+        return "(no detail)"
+
+
 # --- deterministic fake -----------------------------------------------------
 
 
@@ -608,9 +806,15 @@ def get_ai_client(force_fake: bool | None = None) -> AIClient:
                 cheap_model=settings.cheap_model,
                 smart_model=settings.smart_model,
             )
-            client_cls = (
-                GeminiAIClient if settings.ai_provider == "gemini" else AnthropicAIClient
-            )
+            match settings.ai_provider:
+                case "gemini":
+                    client_cls = GeminiAIClient
+                case "openrouter":
+                    client_cls = OpenRouterAIClient
+                case "anthropic":
+                    client_cls = AnthropicAIClient
+                case unreachable:
+                    raise AIClientError(f"unsupported ai_provider: {unreachable!r}")
             _client = client_cls(
                 api_key=settings.ai_api_key,
                 cheap_model=settings.cheap_model,
