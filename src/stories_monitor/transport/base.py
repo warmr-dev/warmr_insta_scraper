@@ -60,6 +60,20 @@ class ProxyBlockedError(TransportError):
     """Proxy address rejected by Instagram."""
 
 
+# Instagram's placeholder for "no image available". Downloading it returns 400.
+_PLACEHOLDER_MEDIA = "rsrc.php/null.jpg"
+
+
+def _is_usable_media_url(url: object) -> bool:
+    """True only for a URL worth spending a download on."""
+    if not isinstance(url, str):
+        return False
+    stripped = url.strip()
+    if not stripped or not stripped.startswith(("http://", "https://")):
+        return False
+    return _PLACEHOLDER_MEDIA not in stripped
+
+
 # --- Data carried across the boundary ---
 
 
@@ -126,11 +140,22 @@ class StoryItem:
         return self.media_type == 1
 
     def best_image_url(self) -> str | None:
-        """Largest image_versions2 candidate by area."""
-        if not self.image_versions:
+        """Largest usable image_versions2 candidate by area.
+
+        Instagram sometimes returns a placeholder instead of a real image -
+        `static.cdninstagram.com/rsrc.php/null.jpg`, which 400s on download.
+        Candidates with no url, an empty url or that placeholder are dropped
+        before choosing, so callers get None rather than a URL that cannot work.
+        """
+        usable = [
+            candidate
+            for candidate in self.image_versions
+            if _is_usable_media_url(candidate.get("url"))
+        ]
+        if not usable:
             return None
         best = max(
-            self.image_versions,
+            usable,
             key=lambda c: (c.get("width") or 0) * (c.get("height") or 0),
         )
         return best.get("url")

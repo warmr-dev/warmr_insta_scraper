@@ -78,3 +78,32 @@ def test_cheap_prompt_covers_spec_auto_rejects():
 def test_smart_prompt_applies_the_category_gate_first():
     """Умная модель тоже обязана отсекать чужие категории."""
     assert "CATEGORY GATE" in SMART_SYSTEM_PROMPT
+
+
+def test_placeholder_image_url_is_rejected():
+    """Instagram отдаёт rsrc.php/null.jpg вместо картинки - скачивание даёт 400.
+
+    Реальный случай: @astana_it_university, HTTPStatusError 400 в логах.
+    """
+    from stories_monitor.transport.base import StoryItem
+
+    def item(versions):
+        return StoryItem(
+            story_id="x", user_id=1, taken_at=1, media_type=1, image_versions=versions
+        )
+
+    placeholder = "https://static.cdninstagram.com/rsrc.php/null.jpg"
+    assert item([{"url": placeholder, "width": 1080, "height": 1920}]).best_image_url() is None
+    assert item([{"url": "", "width": 1, "height": 1}]).best_image_url() is None
+    assert item([{"width": 1, "height": 1}]).best_image_url() is None
+    assert item([{"url": "not-a-url", "width": 1, "height": 1}]).best_image_url() is None
+
+    # Заглушка не должна вытеснять годный кандидат, даже будучи "больше".
+    real = "https://scontent.cdninstagram.com/real.jpg"
+    chosen = item(
+        [
+            {"url": placeholder, "width": 9999, "height": 9999},
+            {"url": real, "width": 100, "height": 100},
+        ]
+    ).best_image_url()
+    assert chosen == real

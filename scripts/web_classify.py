@@ -283,6 +283,11 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
         name = names.get(uid, str(uid))
         url = item.best_image_url()
         if not url:
+            # Instagram отдал заглушку вместо картинки (rsrc.php/null.jpg) или
+            # вовсе не дал ссылку. Помечаем failed, иначе сторис останется в
+            # состоянии `new` и будет всплывать в каждом цикле.
+            print(f"    @{name:20} без пригодной ссылки на картинку — пропуск")
+            _mark(item.story_id, "failed")
             continue
 
         fd, path = tempfile.mkstemp(suffix=".jpg")
