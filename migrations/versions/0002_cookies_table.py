@@ -1,9 +1,11 @@
-"""Таблица cookies - веб-куки по одному аккаунту на строку
+"""Dedicated cookies table - one web-cookie set per account row.
 
-Отдельная таблица, а не JSONB в worker_accounts: её удобно править руками
-в интерфейсе Supabase, когда куки истекли и их надо обновить. Это не
-теоретическое удобство - веб-куки нельзя продлить из кода, поэтому ручное
-обновление входит в штатную эксплуатацию.
+Separate from worker_accounts JSONB so rows can be edited in the DB UI when
+web cookies expire. Web cookies cannot be renewed from code, so manual updates
+are routine operations, not emergencies.
+
+The seven cookies are all required: without ig_did/mid/datr/rur the feed
+endpoints answer 302 - measured, not assumed.
 
 Revision ID: 0002
 Revises: 0001
@@ -11,22 +13,21 @@ Revises: 0001
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0002"
-down_revision = "0001"
-branch_labels = None
-depends_on = None
+revision: str = "0002"
+down_revision: str | None = "0001"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     op.create_table(
         "cookies",
-        # Чьи это куки. Ключ, потому что у аккаунта один активный набор.
         sa.Column("username", sa.Text(), nullable=False),
-        # Семь куки, которые нужны веб-API. Без ig_did/mid/datr/rur ленты
-        # отвечают 302 - проверено.
         sa.Column("sessionid", sa.Text(), nullable=False),
         sa.Column("csrftoken", sa.Text(), nullable=True),
         sa.Column("ds_user_id", sa.Text(), nullable=True),
@@ -34,11 +35,9 @@ def upgrade() -> None:
         sa.Column("mid", sa.Text(), nullable=True),
         sa.Column("datr", sa.Text(), nullable=True),
         sa.Column("rur", sa.Text(), nullable=True),
-        # Выключить аккаунт, не удаляя куки.
         sa.Column(
             "is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")
         ),
-        # Когда обновляли - по этому полю видно, какие куки протухают.
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),

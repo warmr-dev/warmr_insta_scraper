@@ -1,4 +1,4 @@
-# Instagram Stories Monitor
+# Instagram Stories Monitor 
 
 Watches ~57,000 Instagram accounts for newly posted stories, detects them within ~1 minute,
 runs photo stories through a two-stage AI classifier, applies business rules against an
