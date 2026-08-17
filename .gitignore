@@ -47,3 +47,6 @@ cookies.txt
 cookies*.txt
 cookies/
 *_cookies.json
+
+# Скачанные сторис для ручной проверки - медиа не хранится (ТЗ §10)
+downloaded_stories/
