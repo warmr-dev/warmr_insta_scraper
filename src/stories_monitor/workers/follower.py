@@ -16,7 +16,7 @@ import datetime as dt
 import random
 import time
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import func, select, update
 
@@ -64,7 +64,7 @@ SWEEP_GAP_MIN_SEC = 20.0
 SWEEP_GAP_MAX_SEC = 60.0
 
 
-class FollowOutcome(str, Enum):
+class FollowOutcome(StrEnum):
     """Why one follow attempt ended. Tests drive `follow_one` and assert on these."""
 
     FOLLOWED = "followed"           # new follow committed

@@ -346,7 +346,6 @@ class WorkerPoller:
     def _handle_error(self, exc: Exception) -> float:
         """Record the incident and return how long to back off before the next poll."""
         wid = self.worker_account_id
-        settings = self.settings
 
         if isinstance(exc, ChallengeRequiredError):
             # Never attempt to auto-solve. Stop this account and alert (SPEC 7.8).

@@ -354,8 +354,20 @@ psql -d stories_monitor -c "select metric, round(sum(value)::numeric,4) from met
 .venv/bin/python -m stories_monitor.cli warden     # здоровье аккаунтов
 ```
 
-Для `live` нужен Redis (`brew install redis && brew services start redis`).
-В `fixture` очереди работают в памяти.
+**Redis не нужен** для веб-пути — `run_loop.py` работает последовательно и держит
+очереди в памяти. Попытка подключиться к отсутствующему серверу раньше роняла
+контейнер (`Error 61 connecting to localhost:6379`).
+
+Он нужен только распределённому мобильному пути (ТЗ §6), когда семь процессов в
+разных контейнерах должны видеть общую очередь. Тогда:
+
+```bash
+USE_REDIS=true
+REDIS_URL=redis://...
+```
+
+Если `USE_REDIS=true`, но сервер недоступен, процесс не падает — работает в
+памяти и пишет предупреждение.
 
 Диагностика:
 ```bash

@@ -1,14 +1,19 @@
-# Railway: запуск раз в минуту.
+# Railway: постоянный процесс с циклом раз в минуту.
 #
-# Cron, а не постоянный процесс: скрипт делает один цикл и завершается.
-# Всё состояние в Postgres, поэтому пропущенный запуск ничего не ломает -
-# следующий подхватит.
+# Миграции при старте НЕ выполняются - `alembic upgrade head` падал с
+# "Can't locate revision '0002'", когда база оказывалась новее образа, и
+# контейнер уходил в цикл падений. Схема меняется редко: применяйте вручную
+# (`alembic upgrade head`) или задайте RUN_MIGRATIONS=true, тогда сбой миграции
+# не остановит запуск.
+#
+# ВАЖНО: не задавайте `alembic upgrade head` в Start Command или Pre-deploy
+# Command в интерфейсе Railway - именно так и появлялся цикл падений.
 
 [build]
 builder = "dockerfile"
 
 [deploy]
-# Раз в минуту. Railway ждёт завершения предыдущего запуска, поэтому
-# наложения циклов не будет.
-cronSchedule = "* * * * *"
-restartPolicyType = "never"
+# run_loop.py сам держит интервал (LOOP_INTERVAL_SEC, по умолчанию 60с),
+# поэтому cron не нужен: процесс работает постоянно.
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

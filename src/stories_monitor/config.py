@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     # --- Infra ---
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/stories_monitor"
+    # Redis нужен только распределённому мобильному пути (ТЗ §6). Веб-путь
+    # последовательный, очереди держит в памяти. По умолчанию выключен:
+    # попытка подключиться к отсутствующему серверу роняла контейнер.
+    use_redis: bool = False
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Poller ---

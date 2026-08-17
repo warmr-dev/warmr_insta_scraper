@@ -8,6 +8,15 @@ keys) and cannot be honestly tested against SQLite.
 
 If Postgres is unreachable the DB-backed tests skip with a clear message rather
 than erroring the whole suite.
+
+
+ЗАПУСК: тесты создают свою базу на каждый процесс, поэтому их нужно гонять
+против ЛОКАЛЬНОГО Postgres, а не Supabase:
+
+    DATABASE_URL="postgresql+psycopg://<user>@localhost:5432/stories_monitor" pytest -q
+
+С удалённой базой (Supabase в Сиднее, ~2.3с на round-trip) прогон растягивается
+на десятки минут - это не поломка, а задержка сети.
 """
 
 from __future__ import annotations

@@ -257,12 +257,37 @@ def get_queue(name: str) -> Queue:
             return existing
 
         settings = get_settings()
+        redis_url = (settings.redis_url or "").strip()
         queue: Queue
-        if settings.is_fixture_mode and not _redis_reachable(settings.redis_url):
-            log.info("queue.using_fake", queue=name, reason="fixture_mode_no_redis")
+
+        # Redis по умолчанию НЕ используется. Веб-путь (run_loop.py) работает
+        # последовательно, очереди ему не нужны, а попытка подключиться к
+        # несуществующему серверу роняла контейнер на Railway:
+        # "Error 61 connecting to localhost:6379".
+        #
+        # Он нужен только распределённому мобильному пути (ТЗ §6: семь
+        # процессов в разных контейнерах видят общую очередь). Тогда задайте
+        # USE_REDIS=true и рабочий REDIS_URL.
+        valid_scheme = redis_url.startswith(("redis://", "rediss://", "unix://"))
+
+        if not settings.use_redis or not valid_scheme:
+            reason = (
+                "use_redis_disabled" if not settings.use_redis else "redis_url_invalid"
+            )
+            log.info("queue.in_memory", queue=name, reason=reason)
+            queue = FakeQueue(name)
+        elif not _redis_reachable(redis_url):
+            # Явно попросили Redis, но его нет. Не падаем - работаем в памяти,
+            # но говорим об этом громко: в многопроцессном режиме очередь
+            # окажется не общей.
+            log.warning(
+                "queue.redis_unreachable",
+                queue=name,
+                detail="USE_REDIS=true, но сервер недоступен; очередь в памяти",
+            )
             queue = FakeQueue(name)
         else:
-            queue = WorkQueue(name, url=settings.redis_url)
+            queue = WorkQueue(name, url=redis_url)
 
         _queues[name] = queue
         return queue

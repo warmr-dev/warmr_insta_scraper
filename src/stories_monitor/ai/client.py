@@ -106,7 +106,9 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
 
 def _estimated_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    for prefix, (in_rate, out_rate) in _PRICING_USD_PER_MTOK.items():
+    # noqa: B007 - in_rate/out_rate используются после break и в ветке else,
+    # ruff этого не видит.
+    for prefix, (in_rate, out_rate) in _PRICING_USD_PER_MTOK.items():  # noqa: B007
         if model.startswith(prefix):
             break
     else:

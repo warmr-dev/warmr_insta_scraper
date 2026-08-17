@@ -1,0 +1,80 @@
+name: CI
+
+# Railway деплоит сам при пуше в отслеживаемую ветку. Задача этого workflow -
+# поймать поломку ДО того, как она уедет в продакшн: тесты, линтер и проверка,
+# что цепочка миграций цела.
+#
+# Именно последнее и сломалось на Railway: контейнер падал с
+# "Can't locate revision '0002'". Проверка ниже ловит такой рассинхрон здесь.
+
+on:
+  push:
+    branches: [main, ers]
+  pull_request:
+    branches: [main, ers]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stories_monitor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/stories_monitor
+      # Fernet-ключ только для тестов, не секрет.
+      SECRET_KEY: dGVzdC1rZXktZm9yLWNpLW9ubHktbm90LWEtc2VjcmV0LQ=
+      IG_TRANSPORT: fixture
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Проверить цепочку миграций
+        # Ловит именно ту поломку, что была на Railway: обрыв в цепочке
+        # ревизий или дублирующийся head.
+        run: |
+          alembic history
+          heads=$(alembic heads | grep -c "head" || true)
+          if [ "$heads" -ne 1 ]; then
+            echo "Ожидался ровно один head, найдено: $heads"
+            alembic heads
+            exit 1
+          fi
+
+      - name: Применить миграции на чистой базе
+        # Схема должна разворачиваться с нуля. Если это ломается, деплой на
+        # новую базу тоже сломается.
+        run: alembic upgrade head
+
+      - name: Проверить, что downgrade работает
+        run: alembic downgrade base && alembic upgrade head
+
+      - name: Линтер
+        run: ruff check src scripts migrations tests
+
+      - name: Тесты
+        run: pytest -q
+
+      - name: Проверить, что образ собирается
+        # Railway собирает по Dockerfile - ошибка сборки должна всплыть здесь,
+        # а не в продакшене.
+        run: docker build -t stories-monitor:ci .

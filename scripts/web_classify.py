@@ -38,17 +38,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 from stories_monitor.ai.client import get_ai_client  # noqa: E402
 from stories_monitor.ai.ocr import get_ocr_engine  # noqa: E402
 from stories_monitor.config import get_settings  # noqa: E402
-from stories_monitor.db.models import Story, StoryAnalysis, Target  # noqa: E402
-from stories_monitor.db.session import session_scope  # noqa: E402
-from stories_monitor.logging_setup import configure_logging  # noqa: E402
-from stories_monitor.priority import filter_photos  # noqa: E402
-from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
 
 # Отправка в Slack. Идемпотентность даёт первичный ключ slack_deliveries.story_id:
 # один лид отправляется РОВНО один раз, даже если цикл перезапустится (§7.6).
-from stories_monitor.db.models import SlackDelivery  # noqa: E402
+from stories_monitor.db.models import (  # noqa: E402
+    SlackDelivery,  # noqa: E402
+    Story,
+    StoryAnalysis,
+    Target,
+)
+from stories_monitor.db.session import session_scope  # noqa: E402
+from stories_monitor.logging_setup import configure_logging  # noqa: E402
 from stories_monitor.notify.slack import LeadMessage, get_notifier  # noqa: E402
-
+from stories_monitor.priority import filter_photos  # noqa: E402
+from stories_monitor.transport.web import WebTransport, story_age_hours  # noqa: E402
 
 # --- сохранение и дедупликация ------------------------------------------------
 
