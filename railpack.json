@@ -1,6 +1,12 @@
 {
   "$schema": "https://schema.railpack.com",
+  "steps": {
+    "build": {
+      "commands": ["...", "pip install --no-deps ."]
+    }
+  },
   "deploy": {
+    "paths": ["/app/.venv/bin"],
     "startCommand": "bash scripts/start_all.sh"
   }
 }

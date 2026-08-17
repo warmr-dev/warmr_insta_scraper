@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m alembic upgrade head
+PYTHON="/app/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="python"
+fi
+
+"$PYTHON" -m alembic upgrade head
 
 pids=()
 for worker in poller fetcher analyzer bizcheck notifier follower warden; do
-  python -m stories_monitor.cli "$worker" &
+  "$PYTHON" -m stories_monitor.cli "$worker" &
   pids+=("$!")
 done
 
