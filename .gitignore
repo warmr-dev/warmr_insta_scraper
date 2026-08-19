@@ -24,10 +24,13 @@ env/
 .coverage
 htmlcov/
 
-# Runtime state - sessions and downloaded media must never be committed
-sessions/
-tmp_media/
-probe_output/
+# Runtime state - sessions and downloaded media must never be committed.
+# Anchored with a leading slash: a bare `sessions/` also matched
+# web/app/api/sessions/, so that API route was silently never committed and
+# returned 404 in production.
+/sessions/
+/tmp_media/
+/probe_output/
 *.log
 
 # Pilot / scrape outputs
