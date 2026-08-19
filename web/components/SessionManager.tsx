@@ -136,6 +136,34 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
             , or export them with a cookie extension and upload the JSON here.
           </p>
 
+          {/* Two recordings rather than one: the walkthrough is the fuller
+              explanation, but the session it uploads had already expired, so
+              the short clip is the one to copy if you just want it to work. */}
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <a
+              href="https://www.loom.com/share/37ea1ac929be44b2b6c921c278a0e0fd"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600/20 px-3 py-1.5 text-sky-300 transition hover:bg-sky-600/30"
+            >
+              ▶ Watch: uploading a working session
+              <span className="text-xs text-sky-400/70">(2 min, no sound)</span>
+            </a>
+            <a
+              href="https://www.loom.com/share/0068d8ad2a0e4a56865f0c2ff5b93093"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+            >
+              ▶ Full walkthrough
+            </a>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            Start with the short clip — it uploads a session that works. The full
+            walkthrough explains the same steps in more detail, but the session
+            it uploads had already expired by the time it was recorded.
+          </p>
+
           <label className="mt-4 block text-sm text-slate-300">
             Instagram username
             <input
