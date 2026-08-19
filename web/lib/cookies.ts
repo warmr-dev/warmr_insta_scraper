@@ -97,6 +97,9 @@ export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
         },
         redirect: "manual",
         cache: "no-store",
+        // Instagram can hang. Without a deadline the whole function times out
+        // and returns an empty body, which the browser cannot parse as JSON.
+        signal: AbortSignal.timeout(12_000),
       },
     );
 
