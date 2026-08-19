@@ -73,9 +73,19 @@ export type SessionCheck = {
 };
 
 /**
- * Ask Instagram whether the session still works, using the endpoint we actually
- * depend on. `accounts/current_user/` answers 400 to browser cookies even when
- * the feeds work, so it is useless as a health check.
+ * Ask Instagram whether the session still works.
+ *
+ * Uses `feed/reels_media/`, the batch endpoint the collector actually depends
+ * on. Two endpoints that look like better checks are not:
+ *
+ * - `feed/reels_tray/` exists on the mobile API but NOT on the web one. The web
+ *   host answers 200 with the 600KB SPA shell, so it reports every session as
+ *   dead no matter how fresh the cookies are. Measured, not assumed.
+ * - `accounts/current_user/` answers 400 to browser cookies even when the feeds
+ *   work.
+ *
+ * An empty `reels` object is a valid, healthy answer - it means the probe id has
+ * no active story, not that the session is broken.
  */
 export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
   const cookieHeader = Object.entries(jar)
@@ -83,8 +93,10 @@ export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
     .join("; ");
 
   try {
+    // Instagram's own account (id 25025320) is the probe: it always exists, so
+    // a valid session gets a well-formed answer whether or not it has a story.
     const response = await fetch(
-      "https://www.instagram.com/api/v1/feed/reels_tray/",
+      "https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=25025320",
       {
         headers: {
           "User-Agent":
@@ -109,7 +121,7 @@ export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
       // on that throws "Unexpected token '<'", which surfaced to the user as a
       // broken save rather than as "this session is dead".
       const text = await response.text();
-      let body: { tray?: unknown } | null = null;
+      let body: { status?: string; reels?: Record<string, unknown> } | null = null;
       try {
         body = JSON.parse(text);
       } catch {
@@ -119,12 +131,18 @@ export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
         };
       }
 
-      const tray = Array.isArray(body?.tray) ? body.tray : [];
-      const users = tray.filter((t: { id?: string }) => /^\d+$/.test(String(t?.id)));
+      // `{"reels":{},"status":"ok"}` is the healthy shape. Anything else means
+      // Instagram answered but not as a signed-in user.
+      if (body?.status !== "ok") {
+        return {
+          alive: false,
+          detail: `Instagram answered without a session (status: ${body?.status ?? "unknown"})`,
+        };
+      }
+
       return {
         alive: true,
-        detail: `${tray.length} tray entries, ${users.length} with live stories`,
-        trayEntries: tray.length,
+        detail: "Session accepted by the stories feed",
       };
     }
 
