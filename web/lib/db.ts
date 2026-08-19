@@ -35,30 +35,70 @@ function getPool(): Pool {
   }
 
   if (!globalForPool.__warmrPool) {
-    globalForPool.__warmrPool = new Pool({
+    const pool = new Pool({
       connectionString,
       // Supabase's pooler caps concurrent connections, and exceeding it gives
       // ECONNRESET rather than a queue - observed at 20 active connections.
       // Keep this small and let queries wait for a free client instead: the
       // wait is cheaper than a refused connection.
       max: 4,
-      // Keep connections alive between page views. At 10s they expired between
-      // navigations, so every tab switch paid for a fresh handshake.
-      idleTimeoutMillis: 5 * 60_000,
+      // Serverless containers are frozen between requests, so a connection we
+      // think is idle may already have been dropped by the pooler. Expiring our
+      // own connections sooner than Supabase does means we hand out a fresh one
+      // instead of a dead one. Longer than this and a reload after a pause got
+      // a closed socket.
+      idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
     });
+
+    // Without this, `pg` re-throws errors from *idle* clients as an uncaught
+    // exception and kills the whole function - which is why the dashboard died
+    // on reload rather than just failing one query. The pool discards the bad
+    // client on its own; we only have to not crash.
+    pool.on("error", (err) => {
+      console.error("[db] idle client error, connection discarded:", err.message);
+    });
+
+    globalForPool.__warmrPool = pool;
   }
 
   return globalForPool.__warmrPool;
+}
+
+/** A dropped connection looks like this rather than a query error. */
+function isDeadConnection(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = (error as { message?: string } | null)?.message ?? "";
+  return (
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ETIMEDOUT" ||
+    code === "57P01" || // admin_shutdown - the pooler closed it
+    code === "08006" || // connection_failure
+    code === "08003" || // connection_does_not_exist
+    /Connection terminated|socket hang up|server closed the connection/i.test(message)
+  );
 }
 
 export async function query<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = [],
 ): Promise<T[]> {
-  const result = await getPool().query(sql, params);
-  return result.rows as T[];
+  try {
+    const result = await getPool().query(sql, params);
+    return result.rows as T[];
+  } catch (error) {
+    if (!isDeadConnection(error)) throw error;
+
+    // The pool handed us a connection the pooler had already closed while this
+    // container was frozen. The failure discards it, so a single retry gets a
+    // live one. Retrying once is safe here because every query in this app is
+    // a read.
+    console.warn("[db] stale connection, retrying once");
+    const result = await getPool().query(sql, params);
+    return result.rows as T[];
+  }
 }
 
 /** A single row, or null. */
