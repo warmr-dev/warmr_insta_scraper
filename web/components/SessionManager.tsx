@@ -33,16 +33,38 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, cookies }),
       });
-      const data = await response.json();
+      // Not every failure answers with JSON: a platform-level timeout or crash
+      // returns Next's HTML error page, and parsing that threw "Unexpected
+      // token '<'" — hiding whatever actually went wrong.
+      const text = await response.text();
+      let data: {
+        error?: string;
+        detail?: string;
+        alive?: boolean;
+        missing?: string[];
+      };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setResult({
+          ok: false,
+          text: `Server error (HTTP ${response.status}) — the response was not JSON. Check the deployment logs.`,
+        });
+        return;
+      }
+
       if (!response.ok) {
-        setResult({ ok: false, text: data.error ?? "Failed to save" });
+        setResult({
+          ok: false,
+          text: data.detail ?? data.error ?? "Failed to save",
+        });
         return;
       }
       const missing = data.missing?.length
         ? ` Missing: ${data.missing.join(", ")}.`
         : "";
       setResult({
-        ok: data.alive,
+        ok: data.alive === true,
         text: data.alive
           ? `Saved and verified — ${data.detail}`
           : `Saved but NOT working — ${data.detail}.${missing}`,

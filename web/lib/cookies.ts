@@ -104,7 +104,21 @@ export async function checkSession(jar: CookieJar): Promise<SessionCheck> {
     );
 
     if (response.status === 200) {
-      const body = await response.json();
+      // A 200 does not guarantee JSON: when the session is not valid for the
+      // feeds Instagram serves the HTML login page with a 200. Calling .json()
+      // on that throws "Unexpected token '<'", which surfaced to the user as a
+      // broken save rather than as "this session is dead".
+      const text = await response.text();
+      let body: { tray?: unknown } | null = null;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        return {
+          alive: false,
+          detail: "Instagram returned the login page — session not valid for feeds",
+        };
+      }
+
       const tray = Array.isArray(body?.tray) ? body.tray : [];
       const users = tray.filter((t: { id?: string }) => /^\d+$/.test(String(t?.id)));
       return {
