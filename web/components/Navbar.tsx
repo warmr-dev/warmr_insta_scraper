@@ -8,7 +8,6 @@ const LINKS = [
   { href: "/accounts", label: "Accounts & Sessions" },
   { href: "/leads", label: "Leads" },
   { href: "/targets", label: "Monitored Accounts" },
-  { href: "/analytics", label: "Analytics" },
 ];
 
 export function Navbar({ email }: { email: string }) {

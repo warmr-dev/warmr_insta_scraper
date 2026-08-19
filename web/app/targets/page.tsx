@@ -25,6 +25,39 @@ export default async function TargetsPage() {
       title="Monitored Accounts"
       subtitle="Who posts regularly, and who the pipeline has stopped paying to analyse"
     >
+      {/* The question this page kept raising was "whose accounts are these?".
+          Answering it up front costs one paragraph and saves the explanation. */}
+      <div className="mb-6 max-w-3xl rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3.5 text-sm leading-relaxed text-slate-300">
+        <p>
+          These are the Instagram accounts our worker sessions follow. We never
+          poll them one by one — each session asks Instagram once for the story
+          tray of everything it follows, so this whole list costs a single
+          request per session. Add an account here by following it from a
+          session on the{" "}
+          <a
+            href="/accounts"
+            className="text-sky-400 underline-offset-2 hover:underline"
+          >
+            Accounts &amp; Sessions
+          </a>{" "}
+          tab.
+        </p>
+        <p className="mt-2 text-slate-400">
+          A row appears once that account has actually posted a story. Every
+          photo it posts is downloaded and sent to the AI, which costs money —
+          so accounts that keep posting nothing relevant get{" "}
+          <span className="text-amber-300">exhausted</span> and are skipped until
+          a scheduled recheck. Scores of 7 or above become{" "}
+          <a
+            href="/leads"
+            className="text-sky-400 underline-offset-2 hover:underline"
+          >
+            leads
+          </a>
+          .
+        </p>
+      </div>
+
       <div className="mb-6 flex flex-wrap gap-3 text-xs text-slate-400">
         {Object.entries(STATUS_HINT).map(([status, hint]) => (
           <span key={status} className="flex items-center gap-1.5">
