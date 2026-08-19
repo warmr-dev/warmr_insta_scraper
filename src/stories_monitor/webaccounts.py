@@ -175,7 +175,7 @@ def check_alive(account: WebAccount) -> tuple[bool, str]:
     try:
         tray = transport.reels_tray()
         users = [e for e in tray.entries if e.is_user_entry]
-        return True, f"{tray.entry_count} записей, {len(users)} с активными сторис"
+        return True, f"{tray.entry_count} entries, {len(users)} with active stories"
     except Exception as exc:  # noqa: BLE001 - любая ошибка означает "непригодна"
         return False, f"{type(exc).__name__}: {str(exc)[:80]}"
     finally:
@@ -217,7 +217,7 @@ def collect_stories(
                     merged[user_id] = items
 
             status[account.username] = (
-                f"OK - {len(users)} подписок со сторис, {new_users} новых для пула"
+                f"OK - {len(users)} followings with stories, {new_users} new for the pool"
             )
             log.info(
                 "web_account_polled",
@@ -229,22 +229,24 @@ def collect_stories(
             # Куки протухли. Продлить их из кода нельзя, поэтому аккаунт
             # выключается: следующие циклы его пропустят, и мы не будем зря
             # долбить Instagram мёртвой сессией.
-            mark_failed(account.username, f"куки истекли: {exc}")
-            status[account.username] = "КУКИ ИСТЕКЛИ - отключён, обновите в Supabase"
+            # Записи в БД - только по-английски: их читают в Supabase, где
+            # кириллица в CSV-выгрузках и алертах часто ломается.
+            mark_failed(account.username, f"cookies expired: {exc}")
+            status[account.username] = "COOKIES EXPIRED - disabled, refresh in Supabase"
             log.error(
                 "web_cookies_expired",
                 username=account.username,
-                detail="is_active=false; обновите строку в таблице cookies",
+                detail="is_active=false; refresh the row in the cookies table",
             )
         except RateLimitedError as exc:
             # Временно, аккаунт не трогаем - отключать его было бы ошибкой.
-            status[account.username] = "ЛИМИТ - пропуск цикла"
+            status[account.username] = "RATE LIMITED - skipping this cycle"
             log.warning("web_account_throttled", username=account.username, error=str(exc)[:80])
         except Exception as exc:  # noqa: BLE001 - один мёртвый аккаунт не рушит сбор
             # Сетевой сбой и прочее - тоже временное. Не выключаем, но
             # записываем причину, чтобы её было видно в Supabase.
             note_error(account.username, f"{type(exc).__name__}: {exc}")
-            status[account.username] = f"ОШИБКА - {type(exc).__name__}"
+            status[account.username] = f"ERROR - {type(exc).__name__}"
             log.warning(
                 "web_account_failed", username=account.username, error=str(exc)[:120]
             )
