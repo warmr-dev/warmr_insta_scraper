@@ -151,12 +151,16 @@ def mark_failed(username: str, error: str) -> None:
     """Пометить куки нерабочими - видно в Supabase, какие пора обновить."""
     from sqlalchemy import update as sa_update
 
-    with session_scope() as session:
-        session.execute(
-            sa_update(Cookie)
-            .where(Cookie.username == username)
-            .values(last_error=error[:500], is_active=False)
-        )
+    try:
+        with session_scope() as session:
+            session.execute(
+                sa_update(Cookie)
+                .where(Cookie.username == username)
+                .values(last_error=error[:500], is_active=False)
+            )
+    except Exception as exc:  # noqa: BLE001 - тоже вызывается из обработчика
+        log.warning("mark_failed_failed", username=username, error=str(exc)[:120])
+        return
     log.warning("web_cookies_marked_failed", username=username, error=error[:120])
 
 
@@ -180,18 +184,46 @@ def save_following(username: str, pairs: list[tuple[int, str]]) -> None:
         log.warning("following_cache_write_failed", username=username, error=str(exc)[:120])
 
 
+def touch_following_attempt(username: str) -> None:
+    """Отметить попытку обновления подписок, не трогая сам список.
+
+    Без этого сессия с пустым или устаревшим кэшем била в троттлящийся граф
+    каждый цикл: `following_is_stale` оставался True, потому что
+    `following_at` обновлялся только при успехе. Замерено: 4 сессии делали это
+    раз в ~90 секунд без единого шанса на успех.
+    """
+    from sqlalchemy import update as sa_update
+
+    try:
+        with session_scope() as session:
+            session.execute(
+                sa_update(Cookie)
+                .where(Cookie.username == username)
+                .values(following_at=dt.datetime.now(dt.UTC))
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("following_touch_failed", username=username, error=str(exc)[:120])
+
+
 def note_error(username: str, error: str) -> None:
     """Записать причину сбоя, НЕ отключая аккаунт.
 
     Для временных отказов - сеть, 429. Отключать из-за них нельзя: аккаунт
     рабочий, просто сейчас не отвечает.
+
+    Никогда не бросает: вызывается ИЗ обработчика, который существует ровно
+    для того, чтобы один плохой аккаунт не рушил цикл. Замерено: оборванное
+    соединение с Supabase внутри этого обработчика уронило весь прогон.
     """
     from sqlalchemy import update as sa_update
 
-    with session_scope() as session:
-        session.execute(
-            sa_update(Cookie).where(Cookie.username == username).values(last_error=error[:500])
-        )
+    try:
+        with session_scope() as session:
+            session.execute(
+                sa_update(Cookie).where(Cookie.username == username).values(last_error=error[:500])
+            )
+    except Exception as exc:  # noqa: BLE001 - запись причины не стоит цикла
+        log.warning("note_error_failed", username=username, error=str(exc)[:120])
 
 
 def revive(username: str) -> bool:
@@ -284,8 +316,26 @@ def collect_stories(
                         pairs = fresh
                 except (RateLimitedError, TransportError) as exc:
                     if not pairs:
+                        # Кэша нет и граф не отвечает - тупик: заполнить кэш
+                        # можно только тем самым запросом, который троттлится.
+                        # Долбить его каждые полторы минуты бессмысленно и
+                        # вредно, поэтому запоминаем неудачу и не повторяем её
+                        # до следующего окна (following_at ставится сейчас,
+                        # так что следующая попытка - через TTL).
+                        note_error(account.username, f"following unavailable: {exc}")
+                        touch_following_attempt(account.username)
+                        log.warning(
+                            "following_bootstrap_failed",
+                            username=account.username,
+                            detail="no cache and the graph is throttled; "
+                            "retry deferred to the next TTL window",
+                            reason=str(exc)[:80],
+                        )
                         raise
                     # Кэш есть - обновление подождёт до следующего раза.
+                    # following_at обновляем, иначе устаревший кэш заставлял бы
+                    # дёргать троттлящийся граф каждый цикл.
+                    touch_following_attempt(account.username)
                     log.warning(
                         "following_refresh_failed",
                         username=account.username,
