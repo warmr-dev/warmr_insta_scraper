@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { getActivity, getActivityAccounts } from "@/lib/queries";
+import { getActivity, getActivityAccounts, getLogsPageData } from "@/lib/queries";
 
 /**
  * Feed for the live logs page.
@@ -22,10 +22,19 @@ export async function GET(request: Request) {
   const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 200, 1), 500);
 
   try {
-    const [events, accounts] = await Promise.all([
-      getActivity(username, limit),
-      getActivityAccounts(),
-    ]);
+    // Unfiltered is the common case (the page polls it every 5s per open tab),
+    // and it is served from the same one-connection query the page uses, so a
+    // tab left open does not hold two pooled clients per tick. Supabase's
+    // session-mode pooler caps the whole project at 15.
+    if (!username) {
+      const { events, accounts } = await getLogsPageData(limit);
+      return NextResponse.json({ events, accounts });
+    }
+
+    // Filtered: two statements, but run in sequence rather than concurrently -
+    // one pooled client at a time.
+    const events = await getActivity(username, limit);
+    const accounts = await getActivityAccounts();
     return NextResponse.json({ events, accounts });
   } catch (error) {
     console.error("[activity] query failed:", error);

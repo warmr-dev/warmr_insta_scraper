@@ -1,12 +1,7 @@
 import { Shell } from "@/components/Shell";
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { SkippedPanel } from "@/components/SkippedPanel";
-import {
-  getActivity,
-  getActivityAccounts,
-  getSkipSummary,
-  getSkippedTargets,
-} from "@/lib/queries";
+import { getLogsPageData } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -14,12 +9,11 @@ export default async function LogsPage() {
   // Rendered server-side once so the page is populated on arrival; the feed
   // component takes over polling from there. The skip panel is a standing
   // verdict rather than a running commentary, so it is not polled.
-  const [events, accounts, skipSummary, skipped] = await Promise.all([
-    getActivity(undefined, 200),
-    getActivityAccounts(),
-    getSkipSummary(),
-    getSkippedTargets(),
-  ]);
+  //
+  // One call, one pooled connection: `Promise.all` over four queries exhausted
+  // Supabase's session-mode pooler (15 clients project-wide, and every
+  // serverless instance holds its own pool).
+  const { events, accounts, skipSummary, skipped } = await getLogsPageData(200);
 
   return (
     <Shell

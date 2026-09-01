@@ -41,13 +41,28 @@ function getPool(): Pool {
       // ECONNRESET rather than a queue - observed at 20 active connections.
       // Keep this small and let queries wait for a free client instead: the
       // wait is cheaper than a refused connection.
-      max: 4,
+      // The URL is Supabase's SESSION-mode pooler (port 5432), which holds one
+      // server connection per client for the client's whole life and caps the
+      // PROJECT at 15 - not 15 per instance. Every serverless instance keeps
+      // its own pool, so this ceiling is shared with every other warm instance
+      // and with the scraper. At max: 4 a mere four warm instances exhausted
+      // it, and the server threw `EMAXCONNSESSION: max clients reached`, which
+      // reached the browser only as a minified React error.
+      //
+      // 2 is deliberately mean. Page queries are short and the cache absorbs
+      // repeats, so waiting for a free client costs far less than a refused
+      // connection - and it leaves headroom for the scraper, which needs the
+      // same pool to keep collecting.
+      max: 2,
       // Serverless containers are frozen between requests, so a connection we
       // think is idle may already have been dropped by the pooler. Expiring our
       // own connections sooner than Supabase does means we hand out a fresh one
       // instead of a dead one. Longer than this and a reload after a pause got
       // a closed socket.
-      idleTimeoutMillis: 30_000,
+      //
+      // Short here also returns connections to the shared 15 sooner: an idle
+      // client in session mode still occupies one of them.
+      idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 15_000,
       keepAlive: true,
     });
@@ -71,6 +86,10 @@ function isDeadConnection(error: unknown): boolean {
   const code = (error as { code?: string } | null)?.code;
   const message = (error as { message?: string } | null)?.message ?? "";
   return (
+    // The pooler is at capacity. Transient rather than fatal - a client frees
+    // up in milliseconds - so it is worth the same single retry as a dropped
+    // connection. Without this the page 500s while the fix is simply to wait.
+    /EMAXCONNSESSION|max clients reached/i.test(message) ||
     code === "ECONNRESET" ||
     code === "EPIPE" ||
     code === "ETIMEDOUT" ||
@@ -95,7 +114,18 @@ export async function query<T = Record<string, unknown>>(
     // container was frozen. The failure discards it, so a single retry gets a
     // live one. Retrying once is safe here because every query in this app is
     // a read.
-    console.warn("[db] stale connection, retrying once");
+    //
+    // A capacity error is different: nothing is broken, the pooler is simply
+    // full, so an immediate retry would hit the same wall. Pause briefly and
+    // let an in-flight query finish first.
+    const message = (error as { message?: string } | null)?.message ?? "";
+    if (/EMAXCONNSESSION|max clients reached/i.test(message)) {
+      console.warn("[db] pooler at capacity, retrying after a short wait");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } else {
+      console.warn("[db] stale connection, retrying once");
+    }
+
     const result = await getPool().query(sql, params);
     return result.rows as T[];
   }

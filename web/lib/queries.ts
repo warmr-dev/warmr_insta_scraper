@@ -340,6 +340,9 @@ export type SkippedTarget = {
  * decision was actually made on. The log alone would show the verdict without
  * the reasoning; the analysis tables alone would not show that a skip is
  * currently in force.
+ *
+ * Prefer `getLogsPageData` when rendering the page: it fetches this and the
+ * other three panels over ONE pooled connection. See that function for why.
  */
 export async function getSkippedTargets(limit = 100): Promise<SkippedTarget[]> {
   return cached(
@@ -410,6 +413,135 @@ export async function getSkipSummary(): Promise<SkipSummary[]> {
         GROUP BY status
         ORDER BY sum(coalesce(item_count, 0)) DESC
       `),
+    5_000,
+  );
+}
+
+
+export type LogsPageData = {
+  events: ActivityEvent[];
+  accounts: ActivityAccount[];
+  skipSummary: SkipSummary[];
+  skipped: SkippedTarget[];
+};
+
+/**
+ * Everything the Logs page needs, over a single pooled connection.
+ *
+ * The page originally ran its four queries through `Promise.all`, which asks
+ * the pool for four clients at once. That is fine against a normal Postgres,
+ * but this deployment talks to Supabase's SESSION-mode pooler on port 5432,
+ * which holds one server connection per client for the client's whole life and
+ * caps the project at 15. Each serverless instance keeps its own pool, so a
+ * handful of warm instances rendering this page exhausted the cap and the
+ * server threw `EMAXCONNSESSION: max clients reached`. In the browser that
+ * surfaced only as a minified React error, because the failure happened while
+ * streaming the RSC payload - the page had already returned 200.
+ *
+ * One connection, four statements, one round-trip to Sydney. Sequential
+ * `await`s would also have fixed the exhaustion but would pay the latency four
+ * times over; this pays it once.
+ *
+ * Each result is aggregated to a single JSON column so the shapes come back
+ * intact rather than as a cartesian join.
+ */
+export async function getLogsPageData(limit = 200): Promise<LogsPageData> {
+  return cached(
+    `logs:page:${limit}`,
+    async () => {
+      const row = await queryOne<{
+        events: ActivityEvent[] | null;
+        accounts: ActivityAccount[] | null;
+        skip_summary: SkipSummary[] | null;
+        skipped: SkippedTarget[] | null;
+      }>(
+        `
+        WITH recent_events AS (
+          SELECT id::text, username, phase, status, message, targets,
+                 item_count, duration_ms,
+                 to_char(occurred_at AT TIME ZONE 'UTC',
+                         'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS occurred_at
+          FROM activity_log
+          ORDER BY occurred_at DESC, id DESC
+          LIMIT $1
+        ),
+        active_accounts AS (
+          SELECT username,
+                 count(*) AS events,
+                 to_char(max(occurred_at) AT TIME ZONE 'UTC',
+                         'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen,
+                 (SELECT message FROM activity_log b
+                   WHERE b.username = a.username
+                   ORDER BY occurred_at DESC, id DESC LIMIT 1) AS last_message
+          FROM activity_log a
+          WHERE occurred_at > now() - interval '24 hours'
+          GROUP BY username
+          ORDER BY max(occurred_at) DESC
+        ),
+        skip_summary AS (
+          SELECT status,
+                 count(*) AS events,
+                 sum(coalesce(item_count, 0)) AS items
+          FROM activity_log
+          WHERE phase = 'skipped'
+            AND occurred_at > now() - interval '24 hours'
+          GROUP BY status
+          ORDER BY sum(coalesce(item_count, 0)) DESC
+        ),
+        skips AS (
+          SELECT jsonb_array_elements_text(targets) AS handle,
+                 count(*) AS times_skipped,
+                 sum(coalesce(item_count, 0)) AS photos_skipped,
+                 max(occurred_at) AS last_skipped
+          FROM activity_log
+          WHERE phase = 'skipped' AND status = 'irrelevant' AND targets IS NOT NULL
+          GROUP BY 1
+        ),
+        history AS (
+          SELECT t.username,
+                 count(a.story_id) AS analysed,
+                 coalesce(max(a.final_score), 0) AS best_score,
+                 round(coalesce(avg(a.final_score), 0)::numeric, 1) AS avg_score,
+                 count(*) FILTER (WHERE a.final_score >= 7) AS leads
+          FROM targets t
+          JOIN stories st ON st.target_user_id = t.user_id
+          JOIN story_analysis a ON a.story_id = st.story_id
+          GROUP BY t.username
+        ),
+        skipped_targets AS (
+          SELECT s.handle,
+                 s.times_skipped,
+                 s.photos_skipped,
+                 (SELECT message FROM activity_log al
+                   WHERE al.phase = 'skipped' AND al.targets ? s.handle
+                   ORDER BY al.occurred_at DESC LIMIT 1) AS last_reason,
+                 to_char(s.last_skipped AT TIME ZONE 'UTC',
+                         'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_skipped,
+                 coalesce(h.analysed, 0) AS analysed,
+                 coalesce(h.best_score, 0) AS best_score,
+                 coalesce(h.avg_score, 0) AS avg_score,
+                 coalesce(h.leads, 0) AS leads
+          FROM skips s
+          LEFT JOIN history h ON h.username = s.handle
+          ORDER BY s.photos_skipped DESC, s.times_skipped DESC
+          LIMIT 100
+        )
+        SELECT
+          (SELECT coalesce(jsonb_agg(to_jsonb(e)), '[]'::jsonb) FROM recent_events e) AS events,
+          (SELECT coalesce(jsonb_agg(to_jsonb(a)), '[]'::jsonb) FROM active_accounts a) AS accounts,
+          (SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM skip_summary s) AS skip_summary,
+          (SELECT coalesce(jsonb_agg(to_jsonb(k)), '[]'::jsonb) FROM skipped_targets k) AS skipped
+      `,
+        [limit],
+      );
+
+      return {
+        events: row?.events ?? [],
+        accounts: row?.accounts ?? [],
+        skipSummary: row?.skip_summary ?? [],
+        skipped: row?.skipped ?? [],
+      };
+    },
     5_000,
   );
 }
