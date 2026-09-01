@@ -28,6 +28,7 @@ from types import FrameType
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+from stories_monitor import activity  # noqa: E402
 from stories_monitor.logging_setup import configure_logging, get_logger  # noqa: E402
 from stories_monitor.notify.telegram import (  # noqa: E402
     alert_cookies_expired,
@@ -58,6 +59,13 @@ def _cycle(limit: int) -> bool:
         alert_no_accounts()
         return False
 
+    activity.record(
+        "system", "cycle",
+        message=f"Cycle started across {len(accounts)} active sessions",
+        targets=[a.username for a in accounts],
+        item_count=len(accounts),
+    )
+
     reels, names, status = collect_stories(accounts)
     working = [u for u, s in status.items() if s.startswith("OK")]
     if not working:
@@ -74,6 +82,13 @@ def _cycle(limit: int) -> bool:
         return False
 
     _classify(reels, names, limit)
+    activity.record(
+        "system", "cycle",
+        message=f"Cycle finished — {len(working)}/{len(accounts)} sessions OK",
+        item_count=len(working),
+    )
+    # Иначе таблица растёт без границ: 11 аккаунтов в минуту.
+    activity.prune()
     return True
 
 

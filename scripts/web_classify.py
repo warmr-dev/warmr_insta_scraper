@@ -27,6 +27,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -35,6 +36,7 @@ import httpx  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
+from stories_monitor import activity  # noqa: E402
 from stories_monitor.ai.client import get_ai_client  # noqa: E402
 from stories_monitor.ai.ocr import get_ocr_engine  # noqa: E402
 from stories_monitor.config import get_settings  # noqa: E402
@@ -279,14 +281,25 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
     now = dt.datetime.now(dt.UTC)
     results: list[tuple[str, int, str]] = []
 
+    from stories_monitor.webaccounts import SOURCE
+
     for uid, item in fresh[:limit]:
         name = names.get(uid, str(uid))
+        # Чья сессия принесла эту сторис - чтобы в дашборде фаза AI была
+        # привязана к аккаунту, а не висела в воздухе.
+        owner = SOURCE.get(uid, "-")
+        ai_started = time.monotonic()
         url = item.best_image_url()
         if not url:
             # Instagram отдал заглушку вместо картинки (rsrc.php/null.jpg) или
             # вовсе не дал ссылку. Помечаем failed, иначе сторис останется в
             # состоянии `new` и будет всплывать в каждом цикле.
             print(f"    @{name:20} без пригодной ссылки на картинку — пропуск")
+            activity.record(
+                owner, "ai_scoring", status="skipped",
+                message=f"@{name}: no usable image URL, skipped before AI",
+                targets=[name],
+            )
             _mark(item.story_id, "failed")
             continue
 
@@ -300,6 +313,11 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
             except Exception:  # noqa: BLE001 - OCR не должен терять сторис
                 pass
 
+            activity.record(
+                owner, "ai_scoring",
+                message=f"Sending @{name}'s story to AI ({settings.cheap_model})",
+                targets=[name], item_count=1,
+            )
             cheap = client.call_cheap(path, text)
 
             # Категория - жёсткие ворота (ТЗ §7). Проверяем ДО маршрутизации:
@@ -313,6 +331,15 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 cheap.score = 0
                 _save_analysis(item.story_id, text, cheap, 0, "Category outside the allowed list (spec 7)")
                 _mark(item.story_id, "analyzed")
+                activity.record(
+                    owner, "ai_scored", status="ok",
+                    message=(
+                        f"@{name} scored {cheap.score}/10 → 0 "
+                        f"(category outside allowed list)"
+                    ),
+                    targets=[name], item_count=1,
+                    duration_ms=int((time.monotonic() - ai_started) * 1000),
+                )
                 results.append((name, 0, cheap.service_category or "-"))
                 continue
 
@@ -363,6 +390,16 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
             )
             _mark(item.story_id, "analyzed")
             results.append((name, final, cheap.service_category or "-"))
+            activity.record(
+                owner, "ai_scored",
+                status="lead" if final >= settings.approval_score_min else "ok",
+                message=(
+                    f"@{name} scored {final}/10 via {route}"
+                    + (f" — {cheap.service_category}" if cheap.service_category else "")
+                ),
+                targets=[name], item_count=1,
+                duration_ms=int((time.monotonic() - ai_started) * 1000),
+            )
 
             if final >= settings.approval_score_min:
                 sent = _notify_lead(
@@ -372,8 +409,22 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 )
                 if sent:
                     _mark(item.story_id, "sent")
+                activity.record(
+                    owner, "lead",
+                    status="ok" if sent else "error",
+                    message=(
+                        f"LEAD @{name} ({final}/10) "
+                        + ("sent to Slack" if sent else "found but delivery failed")
+                    ),
+                    targets=[name], item_count=1,
+                )
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
             print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
+            activity.record(
+                owner, "ai_scoring", status="error",
+                message=f"@{name}: {type(exc).__name__}: {str(exc)[:120]}",
+                targets=[name],
+            )
             _mark(item.story_id, "failed")
         finally:
             # Медиа не переживает анализ (§7.4, §11).

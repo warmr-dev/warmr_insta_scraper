@@ -247,3 +247,31 @@ class MetricSample(Base):
     )
 
     __table_args__ = (Index("ix_metric_samples_metric_time", "metric", "recorded_at"),)
+
+
+class ActivityLog(Base):
+    """What each web session is doing, step by step (migration 0004).
+
+    Keyed by `username` to match `cookies`, not by `worker_accounts.id` like
+    `AccountEvent` - the web path has no worker rows.
+    """
+
+    __tablename__ = "activity_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    # poll | stories_found | ai_scoring | ai_scored | lead | error | cycle
+    phase: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="ok")
+    message: Mapped[str | None] = mapped_column(Text)
+    targets: Mapped[list[str] | None] = mapped_column(JSONB)
+    item_count: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    occurred_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_activity_log_recent", "occurred_at"),
+        Index("ix_activity_log_account", "username", "occurred_at"),
+    )

@@ -286,6 +286,27 @@ def web_list_cmd(check: bool) -> None:
         click.echo("\n--check проверит куки живым запросом")
 
 
+@cli.command("logs")
+@click.option("--account", default=None, help="Только этот аккаунт")
+@click.option("--limit", default=40, show_default=True)
+def logs_cmd(account: str | None, limit: int) -> None:
+    """Активность сессий - то же, что на вкладке Activity Logs в дашборде."""
+    from .activity import recent
+
+    rows = recent(account, limit)
+    if not rows:
+        click.echo("активности пока нет - запустите сборщик")
+        return
+
+    # Oldest first: reads like a transcript of the cycle.
+    for r in reversed(rows):
+        ts = r["occurred_at"].strftime("%H:%M:%S") if r["occurred_at"] else "--:--:--"
+        targets = r["targets"] or []
+        tail = f"  [{', '.join(targets[:5])}{'...' if len(targets) > 5 else ''}]" if targets else ""
+        took = f" ({r['duration_ms'] / 1000:.1f}s)" if r["duration_ms"] else ""
+        click.echo(f"{ts}  @{r['username']:<20} {r['phase']:<14} {r['message'] or ''}{took}{tail}")
+
+
 @cli.command("web-remove")
 @click.argument("username")
 def web_remove_cmd(username: str) -> None:

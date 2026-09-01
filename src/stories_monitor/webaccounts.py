@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 
+from . import activity
 from .db.models import Cookie
 from .db.session import session_scope
 from .logging_setup import get_logger
@@ -182,6 +184,11 @@ def check_alive(account: WebAccount) -> tuple[bool, str]:
         transport.close()
 
 
+# Кто из воркеров принёс сторис конкретной цели. Заполняется collect_stories и
+# читается фазой AI, чтобы в дашборде оценка была привязана к сессии.
+SOURCE: dict[int, str] = {}
+
+
 def collect_stories(
     accounts: list[WebAccount] | None = None,
 ) -> tuple[dict[int, list[Any]], dict[int, str], dict[str, str]]:
@@ -197,24 +204,56 @@ def collect_stories(
     merged: dict[int, list[Any]] = {}
     names: dict[int, str] = {}
     status: dict[str, str] = {}
+    SOURCE.clear()
 
     for account in pool:
         transport = account.transport()
+        started = time.monotonic()
         try:
             tray = transport.reels_tray()
             users = [e for e in tray.entries if e.is_user_entry]
             for entry in users:
                 names.setdefault(entry.user_id, entry.user.get("username", str(entry.id)))
 
+            # Кого именно опрашиваем - это и есть "аккаунт 1 берёт сторис у 1..2..3"
+            # в дашборде.
+            handles = [names.get(e.user_id, str(e.user_id)) for e in users if e.user_id]
+            activity.record(
+                account.username,
+                "poll",
+                message=f"Polled tray: {tray.entry_count} entries, {len(users)} with active stories",
+                targets=handles,
+                item_count=len(users),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+
             reels = transport.reels_media([e.user_id for e in users if e.user_id])
             new_users = 0
             for user_id, items in reels.items():
                 if user_id not in merged:
                     merged[user_id] = items
+                    SOURCE[user_id] = account.username
                     new_users += 1
                 # Тот же аккаунт виден с двух воркеров - берём непустой набор.
                 elif not merged[user_id] and items:
                     merged[user_id] = items
+                    SOURCE[user_id] = account.username
+
+            fetched = sum(len(v) for v in reels.values())
+            with_stories = [
+                names.get(uid, str(uid)) for uid, items in reels.items() if items
+            ]
+            activity.record(
+                account.username,
+                "stories_found",
+                message=(
+                    f"Fetched {fetched} story items from {len(with_stories)} accounts "
+                    f"({new_users} new for the pool)"
+                ),
+                targets=with_stories,
+                item_count=fetched,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
 
             status[account.username] = (
                 f"OK - {len(users)} followings with stories, {new_users} new for the pool"
@@ -232,6 +271,13 @@ def collect_stories(
             # Записи в БД - только по-английски: их читают в Supabase, где
             # кириллица в CSV-выгрузках и алертах часто ломается.
             mark_failed(account.username, f"cookies expired: {exc}")
+            activity.record(
+                account.username,
+                "error",
+                status="expired",
+                message=f"Session expired and was disabled: {exc}",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             status[account.username] = "COOKIES EXPIRED - disabled, refresh in Supabase"
             log.error(
                 "web_cookies_expired",
@@ -240,12 +286,26 @@ def collect_stories(
             )
         except RateLimitedError as exc:
             # Временно, аккаунт не трогаем - отключать его было бы ошибкой.
+            activity.record(
+                account.username,
+                "error",
+                status="rate_limited",
+                message=f"Rate limited, skipping this cycle: {exc}",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             status[account.username] = "RATE LIMITED - skipping this cycle"
             log.warning("web_account_throttled", username=account.username, error=str(exc)[:80])
         except Exception as exc:  # noqa: BLE001 - один мёртвый аккаунт не рушит сбор
             # Сетевой сбой и прочее - тоже временное. Не выключаем, но
             # записываем причину, чтобы её было видно в Supabase.
             note_error(account.username, f"{type(exc).__name__}: {exc}")
+            activity.record(
+                account.username,
+                "error",
+                status="error",
+                message=f"{type(exc).__name__}: {exc}",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
             status[account.username] = f"ERROR - {type(exc).__name__}"
             log.warning(
                 "web_account_failed", username=account.username, error=str(exc)[:120]

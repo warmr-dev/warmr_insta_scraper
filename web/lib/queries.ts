@@ -248,3 +248,74 @@ export async function getPipelineStates(): Promise<PipelineState[]> {
     `),
   );
 }
+
+export type ActivityEvent = {
+  id: string;
+  username: string;
+  phase: string;
+  status: string;
+  message: string | null;
+  targets: string[] | null;
+  item_count: number | null;
+  duration_ms: number | null;
+  occurred_at: string;
+};
+
+/**
+ * The live activity trail (migration 0004).
+ *
+ * Cached for 5s rather than the usual 30: this page exists to answer "what is
+ * happening right now", and a half-minute-stale feed would defeat it.
+ */
+export async function getActivity(
+  username?: string,
+  limit = 200,
+): Promise<ActivityEvent[]> {
+  return cached(
+    `activity:${username ?? "all"}:${limit}`,
+    () =>
+      query<ActivityEvent>(
+        `
+        SELECT id::text, username, phase, status, message, targets,
+               item_count, duration_ms,
+               to_char(occurred_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS occurred_at
+        FROM activity_log
+        ${username ? "WHERE username = $2" : ""}
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT $1
+      `,
+        username ? [limit, username] : [limit],
+      ),
+    5_000,
+  );
+}
+
+export type ActivityAccount = {
+  username: string;
+  events: number;
+  last_seen: string | null;
+  last_message: string | null;
+};
+
+/** One row per session that has done anything recently - drives the filter. */
+export async function getActivityAccounts(): Promise<ActivityAccount[]> {
+  return cached(
+    "activity:accounts",
+    () =>
+      query<ActivityAccount>(`
+        SELECT username,
+               count(*) AS events,
+               to_char(max(occurred_at) AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen,
+               (SELECT message FROM activity_log b
+                 WHERE b.username = a.username
+                 ORDER BY occurred_at DESC, id DESC LIMIT 1) AS last_message
+        FROM activity_log a
+        WHERE occurred_at > now() - interval '24 hours'
+        GROUP BY username
+        ORDER BY max(occurred_at) DESC
+      `),
+    5_000,
+  );
+}
