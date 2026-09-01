@@ -79,31 +79,62 @@ function scoreTone(score: number | null): string {
   return "text-slate-500";
 }
 
-type Filter = "all" | "live" | "analysed" | "leads";
+type Filter = "all" | "live" | "analysed" | "leads" | "best" | "photos";
+
+// `best` and `leads` are claims about the highest-scoring stories, so those
+// views sort by score. Everything else reads better newest-first.
+const SCORE_SORTED: ReadonlySet<Filter> = new Set<Filter>(["best", "leads"]);
 
 export function StoryList({
   stories,
   username,
   liveCount,
+  initialView,
 }: {
   stories: TargetStory[];
   username: string;
   liveCount: number;
+  initialView?: string;
 }) {
-  const [filter, setFilter] = useState<Filter>(liveCount > 0 ? "live" : "all");
+  const [filter, setFilter] = useState<Filter>(() => {
+    const wanted = initialView as Filter | undefined;
+    // Honour the column that was clicked on /targets. Falling back to "live"
+    // would hide the very story the number referred to: a score-8 story is
+    // usually older than 24h and so not in the live set at all.
+    if (wanted && ["all", "live", "analysed", "leads", "best", "photos"].includes(wanted)) {
+      return wanted;
+    }
+    return liveCount > 0 ? "live" : "all";
+  });
   const [open, setOpen] = useState<string | null>(null);
 
   const visible = useMemo(() => {
+    let rows: TargetStory[];
     switch (filter) {
       case "live":
-        return stories.filter((s) => s.is_live);
+        rows = stories.filter((s) => s.is_live);
+        break;
       case "analysed":
-        return stories.filter((s) => s.final_score != null);
+        rows = stories.filter((s) => s.final_score != null);
+        break;
       case "leads":
-        return stories.filter((s) => (s.final_score ?? 0) >= 7);
+        rows = stories.filter((s) => (s.final_score ?? 0) >= 7);
+        break;
+      case "best":
+        // Only scored stories, best first - the "Best" column is a claim about
+        // one story and this is the view that shows which.
+        rows = stories.filter((s) => s.final_score != null);
+        break;
+      case "photos":
+        rows = stories.filter((s) => s.media_type === 1);
+        break;
       default:
-        return stories;
+        rows = stories;
     }
+    if (SCORE_SORTED.has(filter)) {
+      rows = [...rows].sort((a, b) => (b.final_score ?? 0) - (a.final_score ?? 0));
+    }
+    return rows;
   }, [stories, filter]);
 
   const counts = useMemo(
@@ -112,14 +143,18 @@ export function StoryList({
       live: stories.filter((s) => s.is_live).length,
       analysed: stories.filter((s) => s.final_score != null).length,
       leads: stories.filter((s) => (s.final_score ?? 0) >= 7).length,
+      photos: stories.filter((s) => s.media_type === 1).length,
+      best: stories.reduce((m, s) => Math.max(m, s.final_score ?? 0), 0),
     }),
     [stories],
   );
 
   const TABS: { key: Filter; label: string }[] = [
     { key: "live", label: `Open now (${counts.live})` },
+    { key: "best", label: `Best first (${counts.best}/10)` },
     { key: "analysed", label: `Analysed (${counts.analysed})` },
     { key: "leads", label: `Leads (${counts.leads})` },
+    { key: "photos", label: `Photos (${counts.photos})` },
     { key: "all", label: `All (${counts.all})` },
   ];
 
@@ -140,6 +175,13 @@ export function StoryList({
           </button>
         ))}
       </div>
+
+      {SCORE_SORTED.has(filter) && visible.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Sorted by score, highest first — the top row is the story behind this
+          account&apos;s best result.
+        </p>
+      )}
 
       <p className="text-xs text-slate-500">
         Instagram stories disappear after 24 hours, and we delete the media as
@@ -169,7 +211,11 @@ export function StoryList({
                 <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                   {filter === "live"
                     ? "No stories from this account are still within Instagram's 24-hour window."
-                    : "Nothing here yet."}
+                    : filter === "leads"
+                      ? "No story from this account has scored 7 or above."
+                      : filter === "best" || filter === "analysed"
+                        ? "No story from this account has been analysed yet."
+                        : "Nothing here yet."}
                 </td>
               </tr>
             ) : (

@@ -75,10 +75,13 @@ export default async function TargetsPage() {
         empty="No monitored accounts have posted yet"
       >
         {targets.map((target) => {
-          const detail = `/targets/${encodeURIComponent(target.username)}`;
-          // Every count links to the same detail page. The numbers are what the
-          // eye lands on, so making them the click target beats hiding the
-          // drill-down behind the handle - which already goes to Instagram.
+          const base = `/targets/${encodeURIComponent(target.username)}`;
+          // Each column carries its own view. A count is a claim about a
+          // particular subset - "best 8" is about one story, "leads 4" about
+          // four - so landing on an undifferentiated chronological list made
+          // the number unverifiable, which is the whole reason to click it.
+          const detail = base;
+          const view = (v: string) => `${base}?view=${v}`;
           const cell = "px-4 py-3 tabular-nums";
           return (
           <tr key={target.username} className="hover:bg-slate-900/40">
@@ -102,23 +105,23 @@ export default async function TargetsPage() {
               </span>
             </td>
             <td className={cell}>
-              <Link href={detail} className="hover:text-sky-300">
+              <Link href={view("all")} className="hover:text-sky-300">
                 {target.stories}
               </Link>
             </td>
             <td className={cell}>
-              <Link href={detail} className="hover:text-sky-300">
+              <Link href={view("photos")} className="hover:text-sky-300">
                 {target.photos}
               </Link>
             </td>
             <td className={cell}>
-              <Link href={detail} className="hover:text-sky-300">
+              <Link href={view("analysed")} className="hover:text-sky-300">
                 {target.analysed}
               </Link>
             </td>
             <td className={cell}>
               <Link
-                href={detail}
+                href={view("leads")}
                 className={
                   Number(target.leads) > 0
                     ? "text-emerald-400 hover:underline"
@@ -129,7 +132,7 @@ export default async function TargetsPage() {
               </Link>
             </td>
             <td className={`${cell} text-slate-400`}>
-              <Link href={detail} className="hover:text-sky-300">
+              <Link href={view("best")} className="hover:text-sky-300">
                 {target.best_score}
               </Link>
             </td>

@@ -39,11 +39,17 @@ function Stat({
 
 export default async function TargetDetailPage({
   params,
+  searchParams,
 }: {
-  // Next 16 hands params to the page as a promise.
+  // Next 16 hands params and searchParams to the page as promises.
   params: Promise<{ username: string }>;
+  searchParams: Promise<{ view?: string }>;
 }) {
   const { username } = await params;
+  // Which column was clicked on /targets. "best" and "leads" are claims about
+  // specific stories, so the page opens on those rather than on a chronological
+  // list the reader would have to search.
+  const { view } = await searchParams;
   const { target, stories } = await getTargetDetail(decodeURIComponent(username));
 
   if (!target) notFound();
@@ -103,6 +109,7 @@ export default async function TargetDetailPage({
         stories={stories}
         username={target.username}
         liveCount={Number(target.live_stories)}
+        initialView={view}
       />
     </Shell>
   );
