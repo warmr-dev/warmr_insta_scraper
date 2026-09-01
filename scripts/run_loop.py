@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import pathlib
+import random
 import signal
 import sys
 import time
@@ -97,9 +98,12 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
-    interval = int(os.environ.get("LOOP_INTERVAL_SEC", "60"))
+    interval = int(os.environ.get("LOOP_INTERVAL_SEC", "120"))
     limit = int(os.environ.get("LOOP_PHOTO_LIMIT", "25"))
-    log.info("loop_started", interval_sec=interval, photo_limit=limit)
+    # Сколько джиттера добавлять к интервалу, в долях. 0.5 при интервале 120с
+    # даёт разброс 60-180с. Ноль возвращает старое поведение.
+    jitter = float(os.environ.get("LOOP_JITTER", "0.5"))
+    log.info("loop_started", interval_sec=interval, photo_limit=limit, jitter=jitter)
 
     consecutive_failures = 0
 
@@ -119,12 +123,21 @@ def main() -> int:
         # При стойких отказах разрежаем попытки: если куки мертвы, долбить
         # Instagram раз в минуту бессмысленно и вредно.
         backoff = min(consecutive_failures, 5) * interval
-        sleep_for = max(1.0, interval - elapsed) + backoff
+
+        # Живой человек не открывает Instagram ровно раз в 60 секунд. Ровный
+        # интервал - самый дешёвый признак автоматизации, какой только можно
+        # подарить: он виден даже без анализа содержимого запросов. Поэтому
+        # каждый цикл ждёт своё, случайное время: при interval=120 и
+        # jitter=0.5 это 60-180с, и два соседних цикла почти никогда не
+        # совпадают.
+        target = interval * random.uniform(1.0 - jitter, 1.0 + jitter)
+        sleep_for = max(1.0, target - elapsed) + backoff
 
         log.info(
             "cycle_done",
             duration_sec=round(elapsed, 1),
             sleep_sec=round(sleep_for, 1),
+            next_interval_sec=round(target, 1),
             consecutive_failures=consecutive_failures,
             timestamp=dt.datetime.now(dt.UTC).isoformat(),
         )

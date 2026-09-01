@@ -234,7 +234,14 @@ def use_account_cmd(username: str) -> None:
 @click.argument("username")
 @click.option("--cookies", default=None, help="Строка куки из браузера")
 @click.option("--cookies-file", default=None, help="Файл со строкой куки")
-def web_add_cmd(username: str, cookies: str | None, cookies_file: str | None) -> None:
+@click.option(
+    "--user-agent",
+    default=None,
+    help="User-Agent браузера, из которого скопированы куки (datr привязан к нему)",
+)
+def web_add_cmd(
+    username: str, cookies: str | None, cookies_file: str | None, user_agent: str | None
+) -> None:
     """Сохранить веб-куки для аккаунта (мобильную сессию не трогает)."""
     import pathlib
 
@@ -250,9 +257,14 @@ def web_add_cmd(username: str, cookies: str | None, cookies_file: str | None) ->
     if not raw:
         raise click.ClickException("укажите --cookies или --cookies-file")
 
-    account = save_cookies(username, raw)
+    account = save_cookies(username, raw, user_agent=user_agent)
     click.echo(f"сохранено для @{account.username} (shard {account.shard_id})")
     click.echo(f"  куки: {len(account.cookies)}/{len(COOKIE_NAMES)}")
+    if not user_agent:
+        click.echo(
+            "  ВНИМАНИЕ: не указан --user-agent. datr привязан к браузеру, "
+            "и без совпадающего UA сессия живёт заметно меньше."
+        )
     if account.missing_cookies:
         click.echo(f"  ОТСУТСТВУЮТ: {', '.join(account.missing_cookies)}")
         click.echo("  без них ленты обычно отвечают 302")

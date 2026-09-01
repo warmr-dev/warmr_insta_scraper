@@ -220,6 +220,13 @@ class Cookie(Base):
     rur: Mapped[str | None] = mapped_column(Text)
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # The browser these cookies came from (migration 0005). datr is a device
+    # cookie and Instagram checks it against the UA presenting it.
+    user_agent: Mapped[str | None] = mapped_column(Text)
+    # Cached following list (migration 0006): the graph endpoint is throttled
+    # separately from the feeds, so a stale copy beats collecting nothing.
+    following: Mapped[list[Any] | None] = mapped_column(JSONB)
+    following_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

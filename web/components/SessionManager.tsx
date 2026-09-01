@@ -31,7 +31,15 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
       const response = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, cookies }),
+        // The browser doing the pasting is the browser the cookies came from,
+        // so its own UA is the one `datr` was minted against. Sending it lets
+        // the scraper replay the session as the right device instead of as a
+        // hardcoded Chrome-120-on-macOS that contradicts the cookie.
+        body: JSON.stringify({
+          username,
+          cookies,
+          user_agent: navigator.userAgent,
+        }),
       });
       // Not every failure answers with JSON: a platform-level timeout or crash
       // returns Next's HTML error page, and parsing that threw "Unexpected

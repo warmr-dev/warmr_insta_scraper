@@ -19,6 +19,9 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const username = String(body.username ?? "").trim();
   const raw = String(body.cookies ?? "");
+  // Sent by the paste form; absent for API callers, in which case the scraper
+  // falls back to its shared default and warns.
+  const userAgent = String(body.user_agent ?? "").slice(0, 500) || null;
 
   if (!username) {
     return NextResponse.json({ error: "username is required" }, { status: 400 });
@@ -48,14 +51,17 @@ export async function POST(request: Request) {
     await query(
       `
       INSERT INTO cookies (username, sessionid, csrftoken, ds_user_id, ig_did, mid,
-                           datr, rur, is_active, updated_at, last_error)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), $10)
+                           datr, rur, is_active, updated_at, last_error, user_agent)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), $10, $11)
       ON CONFLICT (username) DO UPDATE SET
         sessionid = EXCLUDED.sessionid, csrftoken = EXCLUDED.csrftoken,
         ds_user_id = EXCLUDED.ds_user_id, ig_did = EXCLUDED.ig_did,
         mid = EXCLUDED.mid, datr = EXCLUDED.datr, rur = EXCLUDED.rur,
         is_active = EXCLUDED.is_active, updated_at = now(),
-        last_error = EXCLUDED.last_error
+        last_error = EXCLUDED.last_error,
+        -- Keep the stored UA when a caller sends none, rather than clearing a
+        -- good value on re-save.
+        user_agent = coalesce(EXCLUDED.user_agent, cookies.user_agent)
     `,
       [
         username,
@@ -68,6 +74,7 @@ export async function POST(request: Request) {
         jar.rur ?? null,
         check.alive,
         check.alive ? null : check.detail,
+        userAgent,
       ],
     );
   } catch (error) {

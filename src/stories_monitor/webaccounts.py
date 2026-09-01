@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -22,7 +23,7 @@ from . import activity
 from .db.models import Cookie
 from .db.session import session_scope
 from .logging_setup import get_logger
-from .transport.base import LoginRequiredError, RateLimitedError
+from .transport.base import LoginRequiredError, RateLimitedError, TransportError
 from .transport.web import COOKIE_NAMES, WebTransport, parse_cookie_header
 
 log = get_logger(__name__)
@@ -41,6 +42,8 @@ class WebAccount:
     shard_id: int
     cookies: dict[str, str]
     saved_at: str | None = None
+    user_agent: str | None = None
+    following: list[Any] | None = None
 
     @property
     def user_id(self) -> str:
@@ -51,10 +54,12 @@ class WebAccount:
         return [n for n in COOKIE_NAMES if n not in self.cookies]
 
     def transport(self) -> WebTransport:
-        return WebTransport(self.cookies)
+        return WebTransport(self.cookies, user_agent=self.user_agent)
 
 
-def save_cookies(username: str, raw: str | dict[str, str]) -> WebAccount:
+def save_cookies(
+    username: str, raw: str | dict[str, str], user_agent: str | None = None
+) -> WebAccount:
     """Сохранить веб-куки аккаунта в таблицу `cookies` (upsert по username)."""
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -65,6 +70,8 @@ def save_cookies(username: str, raw: str | dict[str, str]) -> WebAccount:
     values = {n: jar.get(n) for n in COOKIE_NAMES}
     values["username"] = username
     values["is_active"] = True
+    if user_agent:
+        values["user_agent"] = user_agent
     values["updated_at"] = dt.datetime.now(dt.UTC)
     values["last_error"] = None
 
@@ -84,6 +91,7 @@ def save_cookies(username: str, raw: str | dict[str, str]) -> WebAccount:
         shard_id=0,
         cookies=jar,
         saved_at=values["updated_at"].isoformat(),
+        user_agent=user_agent,
     )
     log.info(
         "web_cookies_saved",
@@ -112,6 +120,8 @@ def load_accounts(username: str | None = None) -> list[WebAccount]:
                     shard_id=0,
                     cookies=jar,
                     saved_at=row.updated_at.isoformat() if row.updated_at else None,
+                    user_agent=row.user_agent,
+                    following=row.following,
                 )
             )
     return accounts
@@ -137,6 +147,26 @@ def mark_failed(username: str, error: str) -> None:
             .values(last_error=error[:500], is_active=False)
         )
     log.warning("web_cookies_marked_failed", username=username, error=error[:120])
+
+
+def save_following(username: str, pairs: list[tuple[int, str]]) -> None:
+    """Запомнить список подписок - на случай, когда граф отдаёт 401."""
+    from sqlalchemy import update as sa_update
+
+    if not pairs:
+        return
+    try:
+        with session_scope() as session:
+            session.execute(
+                sa_update(Cookie)
+                .where(Cookie.username == username)
+                .values(
+                    following=[[int(u), n] for u, n in pairs],
+                    following_at=dt.datetime.now(dt.UTC),
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - кэш не стоит цикла
+        log.warning("following_cache_write_failed", username=username, error=str(exc)[:120])
 
 
 def note_error(username: str, error: str) -> None:
@@ -184,6 +214,10 @@ def check_alive(account: WebAccount) -> tuple[bool, str]:
         transport.close()
 
 
+# Пауза между аккаунтами внутри цикла, секунды.
+_ACCOUNT_GAP_MIN = 3.0
+_ACCOUNT_GAP_MAX = 12.0
+
 # Кто из воркеров принёс сторис конкретной цели. Заполняется collect_stories и
 # читается фазой AI, чтобы в дашборде оценка была привязана к сессии.
 SOURCE: dict[int, str] = {}
@@ -206,11 +240,36 @@ def collect_stories(
     status: dict[str, str] = {}
     SOURCE.clear()
 
-    for account in pool:
+    for index, account in enumerate(pool):
+        # Пауза между аккаунтами. 11 сессий подряд с одного IP - это всплеск,
+        # которого у живого человека быть не может; вразброс он выглядит как
+        # несколько разных людей, а не как один скрипт.
+        if index:
+            time.sleep(random.uniform(_ACCOUNT_GAP_MIN, _ACCOUNT_GAP_MAX))
+
         transport = account.transport()
         started = time.monotonic()
         try:
-            tray = transport.reels_tray()
+            # Список подписок: свежий, если граф отвечает, иначе из кэша.
+            # Граф (`friendships/.../following/`) троттлится отдельно от лент -
+            # замерено: 4 из 11 сессий отдавали там 401, продолжая нормально
+            # отвечать на reels_media. Падать из-за этого нельзя.
+            try:
+                pairs = transport.following()
+                save_following(account.username, pairs)
+            except (RateLimitedError, TransportError) as exc:
+                cached = [(int(u), n) for u, n in (account.following or [])]
+                if not cached:
+                    raise
+                log.warning(
+                    "following_from_cache",
+                    username=account.username,
+                    count=len(cached),
+                    reason=str(exc)[:80],
+                )
+                pairs = cached
+
+            tray = transport.tray_from_following(pairs)
             users = [e for e in tray.entries if e.is_user_entry]
             for entry in users:
                 names.setdefault(entry.user_id, entry.user.get("username", str(entry.id)))
