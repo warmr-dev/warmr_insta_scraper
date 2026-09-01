@@ -545,3 +545,124 @@ export async function getLogsPageData(limit = 200): Promise<LogsPageData> {
     5_000,
   );
 }
+
+export type TargetStory = {
+  story_id: string;
+  media_type: number;
+  pipeline_state: string;
+  taken_at: string;
+  expiring_at: string | null;
+  discovered_at: string;
+  is_live: boolean;
+  final_score: number | null;
+  cheap_score: number | null;
+  smart_score: number | null;
+  service_category: string | null;
+  intent_type: string | null;
+  ai_explanation: string | null;
+  ocr_text: string | null;
+  analyzed_at: string | null;
+};
+
+export type TargetDetail = {
+  username: string;
+  user_id: string;
+  instagram_url: string | null;
+  stories: number;
+  photos: number;
+  videos: number;
+  analysed: number;
+  leads: number;
+  best_score: number;
+  avg_score: number;
+  live_stories: number;
+  last_story_at: string | null;
+  status: string;
+};
+
+/**
+ * One target's header counts and its full story list, over ONE connection.
+ *
+ * Combined for the same reason as `getLogsPageData`: Supabase's session-mode
+ * pooler caps the whole project at 15 clients, so a page that asks for two at
+ * once is two instances away from exhausting it.
+ *
+ * `is_live` is the column that makes this page useful. Instagram stories vanish
+ * after 24 hours and we deliberately keep no copy of the media (spec 7.4/11 -
+ * it is deleted after analysis), so an expired story cannot be opened by anyone
+ * and a link to it would be a dead end. Computed in SQL against now() rather
+ * than in the browser, whose clock may be wrong.
+ */
+export async function getTargetDetail(
+  username: string,
+): Promise<{ target: TargetDetail | null; stories: TargetStory[] }> {
+  return cached(`target:${username}`, async () => {
+    const row = await queryOne<{
+      target: TargetDetail | null;
+      stories: TargetStory[] | null;
+    }>(
+      `
+      WITH tgt AS (
+        SELECT user_id, username, instagram_url FROM targets WHERE username = $1
+      ),
+      story_rows AS (
+        SELECT s.story_id,
+               s.media_type,
+               s.pipeline_state,
+               to_char(s.taken_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS taken_at,
+               to_char(s.expiring_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS expiring_at,
+               to_char(s.discovered_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS discovered_at,
+               -- Openable on Instagram right now? Stories last 24h and we keep
+               -- no media copy, so anything older is gone for good.
+               (coalesce(s.expiring_at, s.taken_at + interval '24 hours') > now())
+                 AS is_live,
+               a.final_score, a.cheap_score, a.smart_score,
+               a.service_category, a.intent_type, a.ai_explanation, a.ocr_text,
+               to_char(a.analyzed_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS analyzed_at
+        FROM stories s
+        JOIN tgt ON tgt.user_id = s.target_user_id
+        LEFT JOIN story_analysis a ON a.story_id = s.story_id
+        ORDER BY s.taken_at DESC
+        LIMIT 500
+      ),
+      header AS (
+        SELECT tgt.username,
+               tgt.user_id::text AS user_id,
+               tgt.instagram_url,
+               count(s.story_id) AS stories,
+               count(*) FILTER (WHERE s.media_type = 1) AS photos,
+               count(*) FILTER (WHERE s.media_type <> 1) AS videos,
+               count(a.story_id) AS analysed,
+               count(*) FILTER (WHERE a.final_score >= 7) AS leads,
+               coalesce(max(a.final_score), 0) AS best_score,
+               round(coalesce(avg(a.final_score), 0)::numeric, 1) AS avg_score,
+               count(*) FILTER (
+                 WHERE coalesce(s.expiring_at, s.taken_at + interval '24 hours') > now()
+               ) AS live_stories,
+               to_char(max(s.taken_at) AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_story_at,
+               CASE
+                 WHEN count(*) FILTER (WHERE a.final_score >= 7) > 0 THEN 'proven'
+                 WHEN coalesce(max(a.final_score), 0) >= 4 THEN 'promising'
+                 WHEN count(a.story_id) >= 8 THEN 'exhausted'
+                 ELSE 'unproven'
+               END AS status
+        FROM tgt
+        LEFT JOIN stories s ON s.target_user_id = tgt.user_id
+        LEFT JOIN story_analysis a ON a.story_id = s.story_id
+        GROUP BY tgt.username, tgt.user_id, tgt.instagram_url
+      )
+      SELECT (SELECT to_jsonb(h) FROM header h) AS target,
+             (SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb)
+                FROM story_rows r) AS stories
+    `,
+      [username],
+    );
+
+    return { target: row?.target ?? null, stories: row?.stories ?? [] };
+  });
+}

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Table } from "@/components/Table";
 import { getTargetActivity } from "@/lib/queries";
@@ -73,16 +74,26 @@ export default async function TargetsPage() {
         head={["Account", "Status", "Stories", "Photos", "Analysed", "Leads", "Best", "Last story"]}
         empty="No monitored accounts have posted yet"
       >
-        {targets.map((target) => (
+        {targets.map((target) => {
+          const detail = `/targets/${encodeURIComponent(target.username)}`;
+          // Every count links to the same detail page. The numbers are what the
+          // eye lands on, so making them the click target beats hiding the
+          // drill-down behind the handle - which already goes to Instagram.
+          const cell = "px-4 py-3 tabular-nums";
+          return (
           <tr key={target.username} className="hover:bg-slate-900/40">
             <td className="whitespace-nowrap px-4 py-3">
+              <Link href={detail} className="text-slate-200 hover:text-sky-300">
+                @{target.username}
+              </Link>
               <a
                 href={target.instagram_url ?? `https://instagram.com/${target.username}`}
                 target="_blank"
                 rel="noreferrer"
-                className="text-sky-400 hover:underline"
+                title="Open on Instagram"
+                className="ml-2 text-xs text-slate-500 hover:text-sky-400"
               >
-                @{target.username}
+                ↗
               </a>
             </td>
             <td className="px-4 py-3">
@@ -90,17 +101,38 @@ export default async function TargetsPage() {
                 {target.status}
               </span>
             </td>
-            <td className="px-4 py-3 tabular-nums">{target.stories}</td>
-            <td className="px-4 py-3 tabular-nums">{target.photos}</td>
-            <td className="px-4 py-3 tabular-nums">{target.analysed}</td>
-            <td className="px-4 py-3 tabular-nums">
-              {Number(target.leads) > 0 ? (
-                <span className="text-emerald-400">{target.leads}</span>
-              ) : (
-                "0"
-              )}
+            <td className={cell}>
+              <Link href={detail} className="hover:text-sky-300">
+                {target.stories}
+              </Link>
             </td>
-            <td className="px-4 py-3 tabular-nums text-slate-400">{target.best_score}</td>
+            <td className={cell}>
+              <Link href={detail} className="hover:text-sky-300">
+                {target.photos}
+              </Link>
+            </td>
+            <td className={cell}>
+              <Link href={detail} className="hover:text-sky-300">
+                {target.analysed}
+              </Link>
+            </td>
+            <td className={cell}>
+              <Link
+                href={detail}
+                className={
+                  Number(target.leads) > 0
+                    ? "text-emerald-400 hover:underline"
+                    : "hover:text-sky-300"
+                }
+              >
+                {target.leads}
+              </Link>
+            </td>
+            <td className={`${cell} text-slate-400`}>
+              <Link href={detail} className="hover:text-sky-300">
+                {target.best_score}
+              </Link>
+            </td>
             <td className="whitespace-nowrap px-4 py-3 text-slate-500">
               {target.last_story_at
                 ? new Date(target.last_story_at).toLocaleString("en-GB", {
@@ -110,7 +142,8 @@ export default async function TargetsPage() {
                 : "—"}
             </td>
           </tr>
-        ))}
+          );
+        })}
       </Table>
     </Shell>
   );
