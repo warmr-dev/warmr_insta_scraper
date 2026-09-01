@@ -139,25 +139,56 @@ def should_analyse(stats: TargetStats | None, now: dt.datetime | None = None) ->
     return True, "истории недостаточно"
 
 
+@dataclass(slots=True)
+class SkipDecision:
+    """Почему конкретную цель пропустили - для дашборда и логов.
+
+    Раньше причина сворачивалась в счётчик и терялась: было видно «пропущено
+    12», но не КОГО и почему. Именно это и нужно объяснить в интерфейсе.
+    """
+
+    user_id: int
+    username: str
+    reason: str
+    photos_skipped: int
+    analysed: int
+    leads: int
+    best_score: int
+    avg_score: float
+    hours_since_last: float
+
+    @property
+    def detail(self) -> str:
+        """Человекочитаемое объяснение - идёт прямо в дашборд."""
+        return (
+            f"{self.analysed} photos analysed, best score {self.best_score}, "
+            f"avg {self.avg_score:.1f}, no leads — {self.reason}"
+        )
+
+
 def filter_photos(
     photos: list[tuple[int, object]], names: dict[int, str] | None = None
-) -> tuple[list[tuple[int, object]], dict[str, int]]:
+) -> tuple[list[tuple[int, object]], dict[str, int], list[SkipDecision]]:
     """Отсеять фото целей, которые стабильно не дают лидов.
 
-    Возвращает (что анализировать, статистика пропусков).
+    Возвращает (что анализировать, статистика пропусков, решения по целям).
+    Третий элемент - подробности по каждой пропущенной цели: без него в
+    интерфейсе видно только «пропущено N», а не за что именно.
     """
     if not photos:
-        return [], {}
+        return [], {}, []
 
     if not get_settings().priority_enabled:
-        return photos, {}
+        return photos, {}, []
 
     stats = load_stats(list({uid for uid, _ in photos}))
     now = dt.datetime.now(dt.UTC)
+    names = names or {}
 
     keep: list[tuple[int, object]] = []
     skipped: dict[str, int] = {}
     decisions: dict[int, str] = {}
+    per_target: dict[int, int] = {}
 
     for user_id, item in photos:
         ok, reason = should_analyse(stats.get(user_id), now)
@@ -166,6 +197,26 @@ def filter_photos(
         else:
             skipped[reason.split(",")[0]] = skipped.get(reason.split(",")[0], 0) + 1
             decisions[user_id] = reason
+            per_target[user_id] = per_target.get(user_id, 0) + 1
+
+    detailed = []
+    for user_id, reason in decisions.items():
+        st = stats.get(user_id)
+        detailed.append(
+            SkipDecision(
+                user_id=user_id,
+                username=names.get(user_id, str(user_id)),
+                reason=reason,
+                photos_skipped=per_target.get(user_id, 0),
+                analysed=st.analysed if st else 0,
+                leads=st.leads if st else 0,
+                best_score=st.best_score if st else 0,
+                avg_score=st.avg_score if st else 0.0,
+                hours_since_last=st.hours_since_last(now) if st else float("inf"),
+            )
+        )
+    # Худшие сверху: кто дороже всего обошёлся впустую.
+    detailed.sort(key=lambda d: (-d.analysed, -d.photos_skipped))
 
     if skipped:
         log.info(
@@ -174,4 +225,4 @@ def filter_photos(
             skipped=len(photos) - len(keep),
             accounts_skipped=len(decisions),
         )
-    return keep, skipped
+    return keep, skipped, detailed

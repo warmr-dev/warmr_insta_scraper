@@ -319,3 +319,97 @@ export async function getActivityAccounts(): Promise<ActivityAccount[]> {
     5_000,
   );
 }
+
+export type SkippedTarget = {
+  handle: string;
+  times_skipped: number;
+  photos_skipped: number;
+  last_reason: string | null;
+  last_skipped: string | null;
+  analysed: number;
+  best_score: number;
+  avg_score: number;
+  leads: number;
+};
+
+/**
+ * Accounts the pipeline stopped paying for, and the evidence behind each call.
+ *
+ * Two sources, deliberately: `activity_log` says how often we skipped a handle
+ * recently, while `stories`/`story_analysis` carry the scoring history the
+ * decision was actually made on. The log alone would show the verdict without
+ * the reasoning; the analysis tables alone would not show that a skip is
+ * currently in force.
+ */
+export async function getSkippedTargets(limit = 100): Promise<SkippedTarget[]> {
+  return cached(
+    `skipped:${limit}`,
+    () =>
+      query<SkippedTarget>(
+        `
+        WITH skips AS (
+          SELECT jsonb_array_elements_text(targets) AS handle,
+                 count(*) AS times_skipped,
+                 sum(coalesce(item_count, 0)) AS photos_skipped,
+                 max(occurred_at) AS last_skipped
+          FROM activity_log
+          WHERE phase = 'skipped' AND status = 'irrelevant' AND targets IS NOT NULL
+          GROUP BY 1
+        )
+        SELECT s.handle,
+               s.times_skipped,
+               s.photos_skipped,
+               (SELECT message FROM activity_log a
+                 WHERE a.phase = 'skipped' AND a.targets ? s.handle
+                 ORDER BY a.occurred_at DESC LIMIT 1) AS last_reason,
+               to_char(s.last_skipped AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_skipped,
+               coalesce(h.analysed, 0) AS analysed,
+               coalesce(h.best_score, 0) AS best_score,
+               coalesce(h.avg_score, 0) AS avg_score,
+               coalesce(h.leads, 0) AS leads
+        FROM skips s
+        LEFT JOIN (
+          SELECT t.username,
+                 count(a.story_id) AS analysed,
+                 coalesce(max(a.final_score), 0) AS best_score,
+                 round(coalesce(avg(a.final_score), 0)::numeric, 1) AS avg_score,
+                 count(*) FILTER (WHERE a.final_score >= 7) AS leads
+          FROM targets t
+          JOIN stories st ON st.target_user_id = t.user_id
+          JOIN story_analysis a ON a.story_id = st.story_id
+          GROUP BY t.username
+        ) h ON h.username = s.handle
+        ORDER BY s.photos_skipped DESC, s.times_skipped DESC
+        LIMIT $1
+      `,
+        [limit],
+      ),
+    5_000,
+  );
+}
+
+export type SkipSummary = {
+  status: string;
+  events: number;
+  items: number;
+};
+
+/** How much each skip reason saved, this being the point of skipping. */
+export async function getSkipSummary(): Promise<SkipSummary[]> {
+  return cached(
+    "skip:summary",
+    () =>
+      query<SkipSummary>(`
+        SELECT status,
+               count(*) AS events,
+               sum(coalesce(item_count, 0)) AS items
+        FROM activity_log
+        WHERE phase = 'skipped'
+          AND occurred_at > now() - interval '24 hours'
+        GROUP BY status
+        ORDER BY sum(coalesce(item_count, 0)) DESC
+      `),
+    5_000,
+  );
+}

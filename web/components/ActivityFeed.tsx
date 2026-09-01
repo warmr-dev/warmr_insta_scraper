@@ -26,6 +26,10 @@ const PHASE_STYLE: Record<string, { label: string; cls: string }> = {
     label: "SCORED",
     cls: "bg-violet-500/15 text-violet-300 ring-violet-500/30",
   },
+  skipped: {
+    label: "SKIPPED",
+    cls: "bg-slate-600/20 text-slate-400 ring-slate-600/30",
+  },
   lead: { label: "LEAD", cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30" },
   error: { label: "ERROR", cls: "bg-rose-500/15 text-rose-300 ring-rose-500/30" },
   cycle: { label: "CYCLE", cls: "bg-slate-500/15 text-slate-300 ring-slate-500/30" },
@@ -214,8 +218,14 @@ export function ActivityFeed({
               visible.map((e) => {
                 const style = phaseStyle(e.phase);
                 const bad = e.status === "error" || e.status === "expired";
+                const muted = e.phase === "skipped";
                 return (
-                  <tr key={e.id} className={bad ? "bg-rose-500/5" : undefined}>
+                  <tr
+                    key={e.id}
+                    className={
+                      bad ? "bg-rose-500/5" : muted ? "opacity-60" : undefined
+                    }
+                  >
                     <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-500">
                       {clock(e.occurred_at)}
                     </td>

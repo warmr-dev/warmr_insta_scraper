@@ -307,6 +307,48 @@ def logs_cmd(account: str | None, limit: int) -> None:
         click.echo(f"{ts}  @{r['username']:<20} {r['phase']:<14} {r['message'] or ''}{took}{tail}")
 
 
+@cli.command("skipped")
+@click.option("--limit", default=30, show_default=True)
+def skipped_cmd(limit: int) -> None:
+    """Кого перестали анализировать и почему - и сколько это сэкономило."""
+    from sqlalchemy import text
+
+    from .db.session import session_scope
+
+    with session_scope() as session:
+        summary = session.execute(
+            text(
+                "SELECT status, count(*) ev, sum(coalesce(item_count,0)) items "
+                "FROM activity_log WHERE phase='skipped' "
+                "AND occurred_at > now() - interval '24 hours' "
+                "GROUP BY status ORDER BY 3 DESC"
+            )
+        ).all()
+        if not summary:
+            click.echo("за сутки ничего не пропускали")
+            return
+
+        click.echo("Пропущено за 24ч (фото, не дошедшие до AI):")
+        for status, events, items in summary:
+            click.echo(f"  {int(items or 0):>5} × {status:<12} ({events} событий)")
+
+        rows = session.execute(
+            text(
+                "SELECT jsonb_array_elements_text(targets) handle, "
+                "count(*) times, sum(coalesce(item_count,0)) photos, max(occurred_at) last "
+                "FROM activity_log WHERE phase='skipped' AND status='irrelevant' "
+                "AND targets IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT :lim"
+            ),
+            {"lim": limit},
+        ).all()
+
+    if rows:
+        click.echo("\nЦели без сигнала (перепроверяются периодически):")
+        for handle, times, photos, last in rows:
+            when = last.strftime("%d.%m %H:%M") if last else "-"
+            click.echo(f"  @{handle:<28} {int(photos or 0):>4} фото  ×{times}  посл. {when}")
+
+
 @cli.command("web-remove")
 @click.argument("username")
 def web_remove_cmd(username: str) -> None:

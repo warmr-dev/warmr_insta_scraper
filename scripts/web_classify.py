@@ -260,8 +260,51 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
     # Приоритизация (ТЗ §5): цели, стабильно не дающие лидов, пропускаем.
     # Замерено: из 15 аккаунтов с анализом лид дал один, 51 фото - впустую.
     before_priority = len(fresh)
-    fresh, skipped_reasons = filter_photos(fresh, names)
+    fresh, skipped_reasons, skip_details = filter_photos(fresh, names)
     deprioritised = before_priority - len(fresh)
+
+    # Всё, что НЕ дошло до AI, объясняем поимённо: иначе в дашборде видно
+    # только «обработано 3 фото», а куда делись остальные - непонятно.
+    from stories_monitor.webaccounts import SOURCE
+
+    if videos:
+        by_owner: dict[str, list[str]] = {}
+        for uid, items in reels.items():
+            n = sum(1 for i in items if not i.is_photo)
+            if n:
+                by_owner.setdefault(SOURCE.get(uid, "-"), []).append(
+                    f"{names.get(uid, uid)}×{n}"
+                )
+        for owner, tg in by_owner.items():
+            activity.record(
+                owner, "skipped", status="video",
+                message=f"Skipped {sum(int(t.split('×')[1]) for t in tg)} videos — "
+                        "photos only (spec 1), never reaches the AI",
+                targets=tg, item_count=len(tg),
+            )
+
+    if seen_before:
+        activity.record(
+            "system", "skipped", status="duplicate",
+            message=f"Skipped {seen_before} photos already analysed in an earlier "
+                    "cycle — deduplicated on story_id, costs nothing",
+            item_count=seen_before,
+        )
+
+    for d in skip_details:
+        activity.record(
+            SOURCE.get(d.user_id, "-"), "skipped", status="irrelevant",
+            message=f"@{d.username}: {d.detail}",
+            targets=[d.username], item_count=d.photos_skipped,
+        )
+
+    if len(fresh) > limit:
+        activity.record(
+            "system", "skipped", status="over_limit",
+            message=f"Deferred {len(fresh) - limit} photos to the next cycle — "
+                    f"per-cycle limit is {limit} (spend cap)",
+            item_count=len(fresh) - limit,
+        )
 
     print(
         f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)\n"
