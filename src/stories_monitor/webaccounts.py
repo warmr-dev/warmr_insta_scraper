@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -44,6 +45,15 @@ class WebAccount:
     saved_at: str | None = None
     user_agent: str | None = None
     following: list[Any] | None = None
+    following_at: dt.datetime | None = None
+
+    @property
+    def following_is_stale(self) -> bool:
+        """Пора ли обновить список подписок."""
+        if self.following_at is None:
+            return True
+        age = dt.datetime.now(dt.UTC) - self.following_at
+        return age.total_seconds() >= FOLLOWING_TTL_SEC
 
     @property
     def user_id(self) -> str:
@@ -122,6 +132,7 @@ def load_accounts(username: str | None = None) -> list[WebAccount]:
                     saved_at=row.updated_at.isoformat() if row.updated_at else None,
                     user_agent=row.user_agent,
                     following=row.following,
+                    following_at=row.following_at,
                 )
             )
     return accounts
@@ -214,6 +225,10 @@ def check_alive(account: WebAccount) -> tuple[bool, str]:
         transport.close()
 
 
+# Как часто обновлять список подписок. Сутки: подписки меняются редко, а
+# граф - самый троттлимый эндпоинт из тех, что мы трогаем.
+FOLLOWING_TTL_SEC = int(os.environ.get("FOLLOWING_TTL_SEC", str(24 * 3600)))
+
 # Пауза между аккаунтами внутри цикла, секунды.
 _ACCOUNT_GAP_MIN = 3.0
 _ACCOUNT_GAP_MAX = 12.0
@@ -250,24 +265,33 @@ def collect_stories(
         transport = account.transport()
         started = time.monotonic()
         try:
-            # Список подписок: свежий, если граф отвечает, иначе из кэша.
-            # Граф (`friendships/.../following/`) троттлится отдельно от лент -
-            # замерено: 4 из 11 сессий отдавали там 401, продолжая нормально
-            # отвечать на reels_media. Падать из-за этого нельзя.
-            try:
-                pairs = transport.following()
-                save_following(account.username, pairs)
-            except (RateLimitedError, TransportError) as exc:
-                cached = [(int(u), n) for u, n in (account.following or [])]
-                if not cached:
-                    raise
-                log.warning(
-                    "following_from_cache",
-                    username=account.username,
-                    count=len(cached),
-                    reason=str(exc)[:80],
-                )
-                pairs = cached
+            # Список подписок берём из кэша, а обновляем раз в сутки.
+            #
+            # `reels_media` умеет только "есть ли сторис у ВОТ ЭТИХ id" - сам
+            # список он не отдаёт, а трея на веб-API нет. Значит id откуда-то
+            # нужны, и единственный источник - граф. Но подписки меняются
+            # медленно (на аккаунт подписались один раз и всё), а
+            # `friendships/.../following/` троттлится жёстче лент: замерено, 4
+            # из 11 сессий отдавали там 401, продолжая нормально отвечать на
+            # reels_media. Дёргать его каждый цикл значило платить самым
+            # рискованным запросом за данные, которые не менялись.
+            pairs = [(int(u), n) for u, n in (account.following or [])]
+            if account.following_is_stale or not pairs:
+                try:
+                    fresh = transport.following()
+                    if fresh:
+                        save_following(account.username, fresh)
+                        pairs = fresh
+                except (RateLimitedError, TransportError) as exc:
+                    if not pairs:
+                        raise
+                    # Кэш есть - обновление подождёт до следующего раза.
+                    log.warning(
+                        "following_refresh_failed",
+                        username=account.username,
+                        cached=len(pairs),
+                        reason=str(exc)[:80],
+                    )
 
             tray = transport.tray_from_following(pairs)
             users = [e for e in tray.entries if e.is_user_entry]
