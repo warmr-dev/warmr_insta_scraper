@@ -172,7 +172,7 @@ class Analyzer:
                     "smart_override_blocked",
                     story_id=story_id,
                     smart_score=final_score,
-                    detail="нет ни seeking_contractor, ни purchase_intent",
+                    detail="neither seeking_contractor nor purchase_intent",
                 )
                 record_metric("smart_override_blocked", 1, {})
                 final_score = 4

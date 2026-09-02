@@ -283,7 +283,7 @@ def get_queue(name: str) -> Queue:
             log.warning(
                 "queue.redis_unreachable",
                 queue=name,
-                detail="USE_REDIS=true, но сервер недоступен; очередь в памяти",
+                detail="USE_REDIS=true but the server is unreachable; using the in-memory queue",
             )
             queue = FakeQueue(name)
         else:

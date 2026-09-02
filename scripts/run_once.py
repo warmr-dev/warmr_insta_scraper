@@ -51,7 +51,7 @@ def main() -> int:
     if get_settings().scraper_offline:
         log.info(
             "offline_mode",
-            detail="SCRAPER_OFFLINE=true - сбор выключен, запросов к Instagram нет",
+            detail="SCRAPER_OFFLINE=true - collection is off, no Instagram requests",
         )
         return 0
 
@@ -61,7 +61,7 @@ def main() -> int:
     if not accounts:
         log.error(
             "no_accounts",
-            detail="в таблице cookies нет активных строк - добавьте куки",
+            detail="no active rows in the cookies table - add cookies",
         )
         return 1
 
@@ -73,7 +73,7 @@ def main() -> int:
         log.error(
             "all_accounts_failed",
             accounts=list(status),
-            detail="обновите куки в таблице cookies через Supabase",
+            detail="refresh the cookies in the cookies table via Supabase",
         )
         return 1
 

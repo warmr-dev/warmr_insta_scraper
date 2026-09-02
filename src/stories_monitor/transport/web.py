@@ -327,13 +327,13 @@ class WebTransport:
             # this rewrite exists to fix.
             raise RateLimitedError(f"web API 401 on {path} - throttled, not expired")
         if response.status_code == 400 and path.startswith("feed/"):
-            # Instagram отвечает 400 на ленты, когда сессия больше не
-            # действительна - отдельного "expired" статуса у веб-API нет.
-            # Проверено: тот же ответ приходит и на users/web_profile_info,
-            # то есть дело в сессии, а не в конкретном эндпоинте.
+            # Instagram answers 400 on the feeds when the session is no longer
+            # valid - the web API has no distinct "expired" status. Verified:
+            # users/web_profile_info returns the same, so it is the session and
+            # not one particular endpoint.
             raise LoginRequiredError(
                 "web API returned 400 on a feed - the session is no longer valid. "
-                "Скопируйте свежие куки из браузера."
+                "Paste fresh cookies from the browser."
             )
         if response.status_code >= 400:
             raise TransportError(f"web API {response.status_code} on {path}")

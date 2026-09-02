@@ -86,7 +86,7 @@ def save_cookies(
 
     jar = parse_cookie_header(raw) if isinstance(raw, str) else dict(raw)
     if not jar.get("sessionid"):
-        raise ValueError("в куки нет sessionid")
+        raise ValueError("cookies do not contain sessionid")
 
     values = {n: jar.get(n) for n in COOKIE_NAMES}
     values["username"] = username

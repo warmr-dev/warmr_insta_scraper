@@ -120,23 +120,26 @@ def should_analyse(stats: TargetStats | None, now: dt.datetime | None = None) ->
     # Нет истории - обязательно анализируем. Иначе новая цель никогда не
     # получит шанс и приоритизация станет самоисполняющейся.
     if stats is None or stats.analysed == 0:
-        return True, "новая цель"
+        return True, "new target"
 
     if stats.is_proven:
-        return True, f"давал лиды ({stats.leads})"
+        return True, f"produced leads ({stats.leads})"
 
     if stats.is_promising:
-        return True, f"перспективный (лучшая оценка {stats.best_score})"
+        return True, f"promising (best score {stats.best_score})"
 
     if stats.is_exhausted:
         # Периодически всё равно проверяем: люди меняют поведение, а выборка
         # маленькая. Полная блокировка навсегда закрыла бы дорогу назад.
         hours = stats.hours_since_last(now)
         if hours >= settings.priority_recheck_hours:
-            return True, f"плановая перепроверка через {hours:.0f}ч"
-        return False, f"{stats.analysed} фото без сигнала, перепроверка через {settings.priority_recheck_hours - hours:.0f}ч"
+            return True, f"scheduled recheck after {hours:.0f}h"
+        return False, (
+            f"{stats.analysed} photos with no signal, recheck in "
+            f"{settings.priority_recheck_hours - hours:.0f}h"
+        )
 
-    return True, "истории недостаточно"
+    return True, "not enough history"
 
 
 @dataclass(slots=True)

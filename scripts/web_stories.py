@@ -53,7 +53,7 @@ def main() -> int:
     if args.cookies_file:
         path = pathlib.Path(args.cookies_file)
         if not path.is_file():
-            print(f"Файл не найден: {path}")
+            print(f"File not found: {path}")
             print("\nСоздайте его так (куки: F12 → Application → Cookies → instagram.com):")
             print("  cat > cookies.txt <<'EOF'")
             print("  sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...")
@@ -68,9 +68,9 @@ def main() -> int:
     jar = parse_cookie_header(raw)
     present = [n for n in COOKIE_NAMES if n in jar]
     missing = [n for n in COOKIE_NAMES if n not in jar]
-    print(f"куки: есть {len(present)}/{len(COOKIE_NAMES)} — {', '.join(present)}")
+    print(f"cookies: {len(present)}/{len(COOKIE_NAMES)} present - {', '.join(present)}")
     if missing:
-        print(f"      отсутствуют: {', '.join(missing)}")
+        print(f"      missing: {', '.join(missing)}")
 
     transport = WebTransport(jar)
 
@@ -78,20 +78,20 @@ def main() -> int:
     # work, so it is a nice-to-have, never a gate.
     try:
         who = transport.whoami()
-        print(f"\nаккаунт: @{who or '?'}")
+        print(f"\naccount: @{who or '?'}")
     except Exception:  # noqa: BLE001
         print(f"\nаккаунт: id={jar.get('ds_user_id', '?')} (current_user недоступен - это нормально)")
 
     try:
         tray = transport.reels_tray()
     except Exception as exc:  # noqa: BLE001
-        print(f"reels_tray не отвечает: {type(exc).__name__}: {exc}")
+        print(f"reels_tray not responding: {type(exc).__name__}: {exc}")
         return 1
 
     users = [e for e in tray.entries if e.is_user_entry]
     highlights = tray.entry_count - len(users)
     print(
-        f"трей: {tray.entry_count} записей | {len(users)} с активными сторис "
+        f"tray: {tray.entry_count} entries | {len(users)} with active stories "
         f"| {highlights} highlights отсеяно"
     )
     if not users:
@@ -104,7 +104,7 @@ def main() -> int:
     try:
         reels = transport.reels_media(ids)
     except Exception as exc:  # noqa: BLE001
-        print(f"\nreels_media не отвечает: {type(exc).__name__}: {exc}")
+        print(f"\nreels_media not responding: {type(exc).__name__}: {exc}")
         return 1
 
     now = dt.datetime.now(dt.UTC)

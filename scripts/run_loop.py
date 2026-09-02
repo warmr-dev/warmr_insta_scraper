@@ -71,7 +71,7 @@ def _run_cycle(limit: int) -> bool:
 
     accounts = load_accounts()
     if not accounts:
-        log.error("no_accounts", detail="в таблице cookies нет активных строк")
+        log.error("no_accounts", detail="no active rows in the cookies table")
         alert_no_accounts()
         return False
 
@@ -90,11 +90,11 @@ def _run_cycle(limit: int) -> bool:
         log.error(
             "all_accounts_failed",
             accounts=list(status),
-            detail="обновите куки в таблице cookies",
+            detail="refresh the cookies in the cookies table",
         )
         # Куки продлить из кода нельзя - без уведомления простой заметят
         # только по пропавшим лидам.
-        expired = [u for u, s in status.items() if "ИСТЕКЛИ" in s]
+        expired = [u for u, s in status.items() if "EXPIRED" in s.upper()]
         alert_cookies_expired(expired or list(status))
         return False
 
@@ -122,7 +122,7 @@ def main() -> int:
     if get_settings().scraper_offline:
         log.info(
             "offline_mode",
-            detail="SCRAPER_OFFLINE=true - сбор выключен, запросов к Instagram нет",
+            detail="SCRAPER_OFFLINE=true - collection is off, no Instagram requests",
         )
         return 0
 

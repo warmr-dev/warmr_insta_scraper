@@ -344,18 +344,18 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
         )
 
     print(
-        f"найдено: {len(photos)} фото | {videos} видео пропущено (§1)\n"
-        f"уже анализировали ранее: {seen_before} | новых к анализу: {len(fresh)}"
+        f"found: {len(photos)} photos | {videos} videos skipped (spec 1)\n"
+        f"analysed before: {seen_before} | new to analyse: {len(fresh)}"
     )
     if deprioritised:
-        print(f"пропущено по приоритету: {deprioritised} (цели без лидов)")
+        print(f"skipped by priority: {deprioritised} (targets with no leads)")
         for reason, count in sorted(skipped_reasons.items(), key=lambda x: -x[1])[:3]:
             print(f"   {count:>3} × {reason}")
     if not fresh:
-        print("\nНовых фото нет - все уже проходили через AI. Платить второй раз не за что.")
+        print("\nNo new photos - all have been through the AI already; nothing to pay for twice.")
         return 0
 
-    print(f"классифицирую {min(limit, len(fresh))} самых свежих\n")
+    print(f"classifying the {min(limit, len(fresh))} most recent\n")
     print("=" * 78)
 
     now = dt.datetime.now(dt.UTC)
@@ -374,7 +374,7 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
             # Instagram отдал заглушку вместо картинки (rsrc.php/null.jpg) или
             # вовсе не дал ссылку. Помечаем failed, иначе сторис останется в
             # состоянии `new` и будет всплывать в каждом цикле.
-            print(f"    @{name:20} без пригодной ссылки на картинку — пропуск")
+            print(f"    @{name:20} no usable image URL - skipped")
             activity.record(
                 owner, "ai_scoring", status="skipped",
                 message=f"@{name}: no usable image URL, skipped before AI",
@@ -406,7 +406,7 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
             # та подняла до 8, и ворота уже не применялись.
             if not cheap.allowed_category:
                 print(
-                    f"    @{name:20} категория вне охвата (§7) — оценка {cheap.score} → 0"
+                    f"    @{name:20} category outside scope (spec 7) - score {cheap.score} -> 0"
                 )
                 cheap.score = 0
                 _save_analysis(item.story_id, text, cheap, 0, "Category outside the allowed list (spec 7)")
@@ -447,21 +447,21 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 if not (cheap.seeking_contractor or cheap.explicit_purchase_intent):
                     if final >= settings.approval_score_min:
                         print(
-                            f"    @{name:20} умная модель дала {final}, но заявки нет "
+                            f"    @{name:20} smart model said {final}, but there is no request "
                             f"(seeking=False, intent=False) → 4"
                         )
                         final = 4
 
-            flag = "ЛИД" if final >= settings.approval_score_min else "   "
+            flag = "LEAD" if final >= settings.approval_score_min else "    "
             print(
                 f"{flag} @{name:20} score={cheap.score:>2} → {final:>2}  [{route}]"
-                f"  {story_age_hours(item, now):.1f}ч"
+                f"  {story_age_hours(item, now):.1f}h"
             )
             if text.strip():
-                print(f"      текст: {text.strip()[:70]}")
+                print(f"      text: {text.strip()[:70]}")
             if cheap.service_category:
                 geo = f" | гео: {cheap.geography}" if cheap.geography else ""
-                print(f"      категория: {cheap.service_category}{geo}")
+                print(f"      category: {cheap.service_category}{geo}")
             if explanation:
                 print(f"      {explanation[:100]}")
 
@@ -504,7 +504,7 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                     targets=[name], item_count=1,
                 )
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
-            print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
+            print(f"    @{name:20} error: {type(exc).__name__}: {str(exc)[:60]}")
             # Сбой БИЛЛИНГА или сети - не свойство сторис, а состояние сервиса:
             # через час всё то же фото разберётся нормально. `failed` - конечное
             # состояние, его никто не перепроверяет, поэтому пометить им сторис
@@ -542,9 +542,9 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
         f"лидов (score >= {settings.approval_score_min}): {len(leads)}"
     )
     for name, score, category in leads:
-        print(f"  ЛИД  @{name} — {score}/10 — {category}")
+        print(f"  LEAD  @{name} - {score}/10 - {category}")
     if not leads:
-        print("  (это ожидаемо: обычные личные сторис — не заявки на услуги)")
+        print("  (expected: ordinary personal stories are not service requests)")
     return 0
 
 
@@ -572,8 +572,8 @@ def main() -> int:
 
         pool = load_accounts(args.account)
         if not pool:
-            print("Нет аккаунтов с веб-куки.")
-            print("Добавить: stories web-add <username> --cookies-file cookies.txt")
+            print("No accounts with web cookies.")
+            print("Add one: stories web-add <username> --cookies-file cookies.txt")
             return 2
         print(
             f"аккаунтов в пуле: {len(pool)} — "
@@ -589,16 +589,16 @@ def main() -> int:
     if args.cookies_file:
         path = pathlib.Path(args.cookies_file)
         if not path.is_file():
-            print(f"Файл не найден: {path}")
-            print("\nСоздайте его так (куки: F12 → Application → Cookies → instagram.com):")
+            print(f"File not found: {path}")
+            print("\nCreate it like this (cookies: F12 -> Application -> Cookies -> instagram.com):")
             print("  cat > cookies.txt <<'EOF'")
             print("  sessionid=...; csrftoken=...; ds_user_id=...; ig_did=...; mid=...; datr=...; rur=...")
             print("  EOF")
             return 2
         raw = path.read_text()
     if not raw:
-        print("Куки не переданы (--cookies / --cookies-file / IG_WEB_COOKIES)")
-        print("Либо используйте --all-accounts после `stories web-add`.")
+        print("No cookies supplied (--cookies / --cookies-file / IG_WEB_COOKIES)")
+        print("Or use --all-accounts after `stories web-add`.")
         return 2
 
     transport = WebTransport(raw)

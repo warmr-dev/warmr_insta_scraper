@@ -252,22 +252,22 @@ def web_add_cmd(
     if cookies_file:
         path = pathlib.Path(cookies_file)
         if not path.is_file():
-            raise click.ClickException(f"файл не найден: {path}")
+            raise click.ClickException(f"file not found: {path}")
         raw = path.read_text()
     if not raw:
-        raise click.ClickException("укажите --cookies или --cookies-file")
+        raise click.ClickException("pass --cookies or --cookies-file")
 
     account = save_cookies(username, raw, user_agent=user_agent)
-    click.echo(f"сохранено для @{account.username} (shard {account.shard_id})")
-    click.echo(f"  куки: {len(account.cookies)}/{len(COOKIE_NAMES)}")
+    click.echo(f"saved for @{account.username} (shard {account.shard_id})")
+    click.echo(f"  cookies: {len(account.cookies)}/{len(COOKIE_NAMES)}")
     if not user_agent:
         click.echo(
             "  ВНИМАНИЕ: не указан --user-agent. datr привязан к браузеру, "
             "и без совпадающего UA сессия живёт заметно меньше."
         )
     if account.missing_cookies:
-        click.echo(f"  ОТСУТСТВУЮТ: {', '.join(account.missing_cookies)}")
-        click.echo("  без них ленты обычно отвечают 302")
+        click.echo(f"  MISSING: {', '.join(account.missing_cookies)}")
+        click.echo("  without these the feeds usually answer 302")
 
 
 @cli.command("web-list")
@@ -278,13 +278,13 @@ def web_list_cmd(check: bool) -> None:
 
     accounts = load_accounts()
     if not accounts:
-        click.echo("Веб-куки не сохранены ни для одного аккаунта.")
-        click.echo("Добавить: stories web-add <username> --cookies-file cookies.txt")
+        click.echo("No web cookies stored for any account.")
+        click.echo("Add one: stories web-add <username> --cookies-file cookies.txt")
         return
 
     for account in accounts:
         missing = (
-            f" | нет: {','.join(account.missing_cookies)}"
+            f" | missing: {','.join(account.missing_cookies)}"
             if account.missing_cookies
             else ""
         )
@@ -295,7 +295,7 @@ def web_list_cmd(check: bool) -> None:
         click.echo(line)
 
     if not check:
-        click.echo("\n--check проверит куки живым запросом")
+        click.echo("\n--check verifies cookies with a live request")
 
 
 @cli.command("logs")
@@ -307,7 +307,7 @@ def logs_cmd(account: str | None, limit: int) -> None:
 
     rows = recent(account, limit)
     if not rows:
-        click.echo("активности пока нет - запустите сборщик")
+        click.echo("no activity yet - start the collector")
         return
 
     # Oldest first: reads like a transcript of the cycle.
@@ -337,12 +337,12 @@ def skipped_cmd(limit: int) -> None:
             )
         ).all()
         if not summary:
-            click.echo("за сутки ничего не пропускали")
+            click.echo("nothing was skipped in the last 24h")
             return
 
-        click.echo("Пропущено за 24ч (фото, не дошедшие до AI):")
+        click.echo("Skipped in 24h (photos that never reached the AI):")
         for status, events, items in summary:
-            click.echo(f"  {int(items or 0):>5} × {status:<12} ({events} событий)")
+            click.echo(f"  {int(items or 0):>5} x {status:<12} ({events} events)")
 
         rows = session.execute(
             text(
@@ -355,10 +355,10 @@ def skipped_cmd(limit: int) -> None:
         ).all()
 
     if rows:
-        click.echo("\nЦели без сигнала (перепроверяются периодически):")
+        click.echo("\nTargets with no signal (rechecked periodically):")
         for handle, times, photos, last in rows:
             when = last.strftime("%d.%m %H:%M") if last else "-"
-            click.echo(f"  @{handle:<28} {int(photos or 0):>4} фото  ×{times}  посл. {when}")
+            click.echo(f"  @{handle:<28} {int(photos or 0):>4} photos  x{times}  last {when}")
 
 
 @cli.command("web-remove")
@@ -368,9 +368,9 @@ def web_remove_cmd(username: str) -> None:
     from .webaccounts import clear_cookies
 
     if clear_cookies(username):
-        click.echo(f"веб-куки @{username} удалены")
+        click.echo(f"web cookies for @{username} removed")
     else:
-        click.echo(f"у @{username} не было веб-куки")
+        click.echo(f"@{username} had no web cookies")
 
 
 @cli.command("login-test")
