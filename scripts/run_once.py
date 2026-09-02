@@ -45,6 +45,16 @@ def main() -> int:
 
     # На хостинге логи должны быть машиночитаемыми.
     configure_logging(json_output=True)
+
+    # Тот же выключатель, что и у run_loop.py: платформа может запускать этот
+    # скрипт по cron, и пауза должна действовать на оба входа одинаково.
+    if get_settings().scraper_offline:
+        log.info(
+            "offline_mode",
+            detail="SCRAPER_OFFLINE=true - сбор выключен, запросов к Instagram нет",
+        )
+        return 0
+
     started = dt.datetime.now(dt.UTC)
 
     accounts = load_accounts(args.account)

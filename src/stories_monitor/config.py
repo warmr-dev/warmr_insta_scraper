@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     ig_transport: Literal["fixture", "live"] = "fixture"
     fixtures_dir: str = "fixtures"
 
+    # Пауза сбора без остановки сервиса. Отдельный флаг, а не третье значение
+    # IG_TRANSPORT: тот отвечает на вопрос "каким транспортом ходить", а не
+    # "ходить ли вообще". Смешав их, мы бы заодно увели лиды в stdout - гейт
+    # Slack завязан на is_fixture_mode.
+    #
+    # Нужно, когда Instagram троттлит IP: продолжать долбить его каждые
+    # полторы минуты бессмысленно, а снимать деплой - терять дашборд.
+    scraper_offline: bool = False
+
     # --- Secrets ---
     secret_key: str = "REPLACE_WITH_FERNET_KEY"
 

@@ -98,6 +98,18 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
+    # SCRAPER_OFFLINE=true - выйти, не сделав ни одного запроса к Instagram.
+    # Проверка стоит до всего остального: смысл флага в том, чтобы НИЧЕГО не
+    # произошло, включая чтение аккаунтов из базы.
+    from stories_monitor.config import get_settings
+
+    if get_settings().scraper_offline:
+        log.info(
+            "offline_mode",
+            detail="SCRAPER_OFFLINE=true - сбор выключен, запросов к Instagram нет",
+        )
+        return 0
+
     interval = int(os.environ.get("LOOP_INTERVAL_SEC", "120"))
     limit = int(os.environ.get("LOOP_PHOTO_LIMIT", "25"))
     # Сколько джиттера добавлять к интервалу, в долях. 0.5 при интервале 120с
