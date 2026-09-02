@@ -49,11 +49,19 @@ class WebAccount:
 
     @property
     def following_is_stale(self) -> bool:
-        """Пора ли обновить список подписок."""
+        """Пора ли обновить список подписок.
+
+        Два разных срока. После УСПЕХА список верен и живёт TTL. После
+        НЕУДАЧИ ждать столько же нельзя: список уже мог устареть, а
+        устаревший список делает аккаунт слепым к новым подпискам. Замерено:
+        401 на графе перемежается с 200, так что повтор через полчаса
+        осмысленен, а раз в сутки - нет.
+        """
         if self.following_at is None:
             return True
-        age = dt.datetime.now(dt.UTC) - self.following_at
-        return age.total_seconds() >= FOLLOWING_TTL_SEC
+        age = (dt.datetime.now(dt.UTC) - self.following_at).total_seconds()
+        window = FOLLOWING_TTL_SEC if self.following else FOLLOWING_RETRY_SEC
+        return age >= window
 
     @property
     def user_id(self) -> str:
@@ -184,7 +192,7 @@ def save_following(username: str, pairs: list[tuple[int, str]]) -> None:
         log.warning("following_cache_write_failed", username=username, error=str(exc)[:120])
 
 
-def touch_following_attempt(username: str) -> None:
+def touch_following_attempt(username: str, retry_in: int | None = None) -> None:
     """Отметить попытку обновления подписок, не трогая сам список.
 
     Без этого сессия с пустым или устаревшим кэшем била в троттлящийся граф
@@ -194,12 +202,18 @@ def touch_following_attempt(username: str) -> None:
     """
     from sqlalchemy import update as sa_update
 
+    # retry_in сдвигает отметку в прошлое так, чтобы следующая попытка пришлась
+    # через указанное число секунд, а не через полный TTL.
+    stamp = dt.datetime.now(dt.UTC)
+    if retry_in is not None:
+        stamp -= dt.timedelta(seconds=max(0, FOLLOWING_TTL_SEC - retry_in))
+
     try:
         with session_scope() as session:
             session.execute(
                 sa_update(Cookie)
                 .where(Cookie.username == username)
-                .values(following_at=dt.datetime.now(dt.UTC))
+                .values(following_at=stamp)
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("following_touch_failed", username=username, error=str(exc)[:120])
@@ -259,7 +273,13 @@ def check_alive(account: WebAccount) -> tuple[bool, str]:
 
 # Как часто обновлять список подписок. Сутки: подписки меняются редко, а
 # граф - самый троттлимый эндпоинт из тех, что мы трогаем.
-FOLLOWING_TTL_SEC = int(os.environ.get("FOLLOWING_TTL_SEC", str(24 * 3600)))
+FOLLOWING_TTL_SEC = int(os.environ.get("FOLLOWING_TTL_SEC", str(6 * 3600)))
+
+# Отдельный, КОРОТКИЙ интервал для повтора после неудачи. Сутки здесь неверны:
+# протухший список делает аккаунт слепым к новым подпискам - замерено, сессия
+# сообщала "0 entries", когда у двух её новых подписок былиживые сторис. Ждать
+# сутки, чтобы это исправить, дороже, чем изредка попробовать граф.
+FOLLOWING_RETRY_SEC = int(os.environ.get("FOLLOWING_RETRY_SEC", str(30 * 60)))
 
 # Пауза между аккаунтами внутри цикла, секунды.
 _ACCOUNT_GAP_MIN = 3.0
@@ -338,10 +358,14 @@ def collect_stories(
                             reason=str(exc)[:80],
                         )
                         raise
-                    # Кэш есть - обновление подождёт до следующего раза.
-                    # following_at обновляем, иначе устаревший кэш заставлял бы
-                    # дёргать троттлящийся граф каждый цикл.
-                    touch_following_attempt(account.username)
+                    # Кэш есть, но он уже просрочен: обновление не удалось.
+                    # Отматываем following_at так, чтобы следующая попытка
+                    # была через FOLLOWING_RETRY_SEC, а не через полный TTL -
+                    # иначе аккаунт остаётся слепым к новым подпискам на сутки
+                    # из-за одного 401.
+                    touch_following_attempt(
+                        account.username, retry_in=FOLLOWING_RETRY_SEC
+                    )
                     log.warning(
                         "following_refresh_failed",
                         username=account.username,
