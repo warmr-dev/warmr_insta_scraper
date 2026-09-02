@@ -240,6 +240,43 @@ def _download(url: str, dest: str) -> str:
 # --- классификация ------------------------------------------------------------
 
 
+def _explain_cheap(cheap: Any) -> str:
+    """Причина вердикта из флагов дешёвой модели.
+
+    Умную модель зовут только для оценок 5-6, так что на `accept` и `reject`
+    объяснение взять неоткуда - а именно `accept` даёт самые сильные лиды.
+    Флаги содержат всё нужное, надо лишь произнести это по-человечески.
+    """
+    reasons: list[str] = []
+    if cheap.seeking_contractor:
+        reasons.append("looking for a provider")
+    if cheap.explicit_purchase_intent:
+        reasons.append("states intent to hire or buy")
+    if cheap.service_category:
+        reasons.append(f"needs {cheap.service_category}")
+    if cheap.geography:
+        reasons.append(f"in {cheap.geography}")
+    if cheap.email_visible:
+        reasons.append("contact visible in the story")
+
+    # Отрицательные признаки объясняют низкую оценку - для них причина нужна
+    # не меньше: без неё непонятно, за что срезали.
+    if cheap.is_offering_services:
+        reasons.append("offering their own services, not requesting")
+    if cheap.is_spam:
+        reasons.append("spam or engagement bait")
+    if cheap.asking_for_free:
+        reasons.append("asking for a freebie")
+    if cheap.complaint_only:
+        reasons.append("complaint with no request")
+    if not cheap.allowed_category:
+        reasons.append("category outside the allowed list")
+
+    if not reasons:
+        return f"Scored {cheap.score}/10 by the first-pass model; no strong signal either way."
+    return f"Scored {cheap.score}/10: " + ", ".join(reasons) + "."
+
+
 def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) -> int:
     """Общая часть для обоих режимов: пул сторис -> оценки."""
     settings = get_settings()
@@ -394,7 +431,12 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 else "accept"
             )
             final = cheap.score
-            explanation = ""
+            # На маршруте `accept` умная модель не вызывается, поэтому
+            # объяснения не было НИ У ОДНОГО сильного лида: чем очевиднее
+            # заявка, тем меньше шансов, что кто-то объяснит вердикт. Дешёвая
+            # модель не возвращает текст, но возвращает флаги - из них и
+            # собираем причину, не платя за второй вызов.
+            explanation = "" if route == "smart" else _explain_cheap(cheap)
             if route == "smart":
                 smart = client.call_smart(path, text, cheap)
                 final = smart.final_score
