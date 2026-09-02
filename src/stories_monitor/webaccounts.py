@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 
 from . import activity
+from .cadence import load_cadences, select_due
 from .db.models import Cookie
 from .db.session import get_sessionmaker, session_scope
 from .logging_setup import get_logger
@@ -522,6 +523,9 @@ def collect_stories(
     _CYCLES += 1
 
     pool = accounts if accounts is not None else load_accounts()
+    # Один запрос на цикл: уровни нужны всем аккаунтам, а считаются по общей
+    # истории целей.
+    cadences = load_cadences()
     merged: dict[int, list[Any]] = {}
     names: dict[int, str] = {}
     status: dict[str, str] = {}
@@ -625,7 +629,21 @@ def collect_stories(
                     "next attempt after the TTL window"
                 )
 
-            tray = transport.tray_from_following(pairs)
+            # Опрашиваем не всех подряд, а по ценности цели. 103 из 123
+            # подписок не выложили ни одной сторис, а 29 целей дали 835 сторис
+            # без единой оценки выше 1: именно эти запросы и съедают лимиты,
+            # из-за которых мы опаздываем к интересным аккаунтам.
+            due, tier_skips = select_due(pairs, cadences)
+            if tier_skips:
+                log.info(
+                    "cadence_filtered",
+                    username=account.username,
+                    polled=len(due),
+                    skipped=sum(tier_skips.values()),
+                    by_tier=tier_skips,
+                )
+
+            tray = transport.tray_from_following(due)
             users = [e for e in tray.entries if e.is_user_entry]
             for entry in users:
                 names.setdefault(entry.user_id, entry.user.get("username", str(entry.id)))
