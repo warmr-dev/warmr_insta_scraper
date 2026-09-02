@@ -308,7 +308,13 @@ def collect_stories(
             # reels_media. Дёргать его каждый цикл значило платить самым
             # рискованным запросом за данные, которые не менялись.
             pairs = [(int(u), n) for u, n in (account.following or [])]
-            if account.following_is_stale or not pairs:
+            # `not pairs` НЕ входит в условие намеренно. Раньше входило - и
+            # сводило на нет весь смысл TTL: у сессии без кэша заполнить его
+            # можно только тем запросом, который троттлится, поэтому она била
+            # в граф каждый цикл, сколько бы раз он ни ответил 401. Теперь
+            # окно одно для всех: пустой кэш ждёт следующего TTL так же, как
+            # устаревший, потому что `following_at` ставится и при неудаче.
+            if account.following_is_stale:
                 try:
                     fresh = transport.following()
                     if fresh:
@@ -342,6 +348,16 @@ def collect_stories(
                         cached=len(pairs),
                         reason=str(exc)[:80],
                     )
+
+            if not pairs:
+                # Ни кэша, ни права попробовать в этом окне. Отдельная ветка:
+                # без неё tray_from_following([]) вернул бы пустой трей и цикл
+                # отчитался бы "OK - 0 followings", что неотличимо от "у всех
+                # подписок нет сторис".
+                raise RateLimitedError(
+                    "no cached following list and the graph is throttled; "
+                    "next attempt after the TTL window"
+                )
 
             tray = transport.tray_from_following(pairs)
             users = [e for e in tray.entries if e.is_user_entry]
