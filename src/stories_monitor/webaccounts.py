@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import select
 
 from . import activity
-from .cadence import load_cadences, select_due
+from .cadence import load_cadences, load_session_cadences, select_due
 from .db.models import Cookie
 from .db.session import get_sessionmaker, session_scope
 from .logging_setup import get_logger
@@ -433,6 +433,8 @@ def _cycle_counter() -> int:
 
 
 # Отдых после отказа: username -> момент, до которого аккаунт не трогаем.
+# Когда сессию в последний раз опрашивали - для её собственного интервала.
+_LAST_POLLED: dict[str, float] = {}
 _RESTING: dict[str, float] = {}
 _STRIKES: dict[str, int] = {}
 # То же самое, но в настенном времени - монотонные часы нельзя показать человеку.
@@ -526,6 +528,7 @@ def collect_stories(
     # Один запрос на цикл: уровни нужны всем аккаунтам, а считаются по общей
     # истории целей.
     cadences = load_cadences()
+    session_cadences = load_session_cadences()
     merged: dict[int, list[Any]] = {}
     names: dict[int, str] = {}
     status: dict[str, str] = {}
@@ -535,6 +538,19 @@ def collect_stories(
         # Дневной потолок. Аккаунт, упёршийся в него, пропускаем целиком:
         # предупреждение об автоматизации прилетает не за один запрос, а за
         # сотни подряд по одной сессии.
+        # Реже опрашиваем сессии, которые ничего не приносят. Замерено за 48
+        # часов: две сессии дали 682 сторис из 746, а три другие - ни одной за
+        # 54 опроса, накопив при этом ошибок. Лимиты конечны, и тратить их надо
+        # на те сессии, ради которых мы торопимся.
+        pace = session_cadences.get(account.username)
+        if pace is not None and pace.interval_sec > 0:
+            last = _LAST_POLLED.get(account.username)
+            if last is not None and (time.monotonic() - last) < pace.interval_sec:
+                status[account.username] = (
+                    f"{pace.tier.upper()} - polled every {pace.interval_sec // 60} min"
+                )
+                continue
+
         if _is_resting(account.username):
             status[account.username] = "RESTING after a rate-limit - skipping"
             continue
@@ -690,6 +706,7 @@ def collect_stories(
 
             # Учитываем реальную стоимость цикла: один запрос графа (если был)
             # плюс по одному на каждые 20 подписок.
+            _LAST_POLLED[account.username] = time.monotonic()
             _bump_requests(account.username, max(1, -(-len(pairs) // 20)))
             _clear_strikes(account.username)
             status[account.username] = (

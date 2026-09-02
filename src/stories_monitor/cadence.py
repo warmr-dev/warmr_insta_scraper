@@ -168,3 +168,81 @@ def select_due(
             skipped["unseen"] = skipped.get("unseen", 0) + 1
 
     return due, skipped
+
+
+# --- приоритет сессий --------------------------------------------------------
+#
+# Сессии тоже не равны. Замерено за 48 часов: fl.uffy16.2 и isabelr.icomarmol
+# принесли 682 сторис из 746, а birendra5735kumar, diango937 и meetahir208 не
+# принесли ни одной за 54 опроса, зато накопили ошибок. Опрашивать их одинаково
+# часто - значит тратить лимиты и рисковать блокировкой ради тишины.
+#
+# Но считать по одному лишь числу сторис нельзя: у сессии с хорошими подписками
+# может просто не быть свежих сторис прямо сейчас. Поэтому уровень определяют
+# ДВА признака - сколько она приносит и насколько надёжно отвечает.
+
+SESSION_COLD_SEC = int(os.environ.get("SESSION_COLD_SEC", str(15 * 60)))
+SESSION_WARM_SEC = int(os.environ.get("SESSION_WARM_SEC", "300"))
+
+# Сколько опросов подряд без единой сторис, прежде чем понижать сессию.
+SESSION_MIN_POLLS = int(os.environ.get("SESSION_MIN_POLLS", "10"))
+
+
+@dataclass(slots=True)
+class SessionCadence:
+    """Как часто опрашивать эту сессию."""
+
+    username: str
+    tier: str
+    interval_sec: int
+    items: int
+    polls: int
+    errors: int
+
+
+def load_session_cadences() -> dict[str, SessionCadence]:
+    """Уровень каждой сессии по её недавней отдаче и надёжности."""
+    sql = """
+        SELECT username,
+               count(*) FILTER (WHERE phase = 'stories_found')                    AS polls,
+               coalesce(sum(item_count) FILTER (WHERE phase = 'stories_found'), 0) AS items,
+               count(*) FILTER (WHERE phase = 'error')                            AS errors
+          FROM activity_log
+         WHERE username <> 'system'
+           AND occurred_at > now() - interval '48 hours'
+         GROUP BY username
+    """
+    out: dict[str, SessionCadence] = {}
+    try:
+        with session_scope() as session:
+            for row in session.execute(text(sql)).mappings():
+                out[row["username"]] = _classify_session(
+                    row["username"],
+                    polls=int(row["polls"] or 0),
+                    items=int(row["items"] or 0),
+                    errors=int(row["errors"] or 0),
+                )
+    except Exception as exc:  # noqa: BLE001 - без градаций опрашиваем всех
+        log.warning("session_cadence_load_failed", error=str(exc)[:120])
+    return out
+
+
+def _classify_session(
+    username: str, *, polls: int, items: int, errors: int
+) -> SessionCadence:
+    # Сессия, которая приносит сторис, - опрашиваем каждый цикл. Это те самые
+    # аккаунты, ради которых мы вообще торопимся.
+    if items > 0:
+        return SessionCadence(username, "productive", 0, items, polls, errors)
+
+    # Ошибок больше, чем успешных опросов: Instagram ей не рад. Реже - это и
+    # экономия лимита, и способ дать ей остыть.
+    if errors > max(polls, 1):
+        return SessionCadence(username, "unreliable", SESSION_COLD_SEC, items, polls, errors)
+
+    # Достаточно опросов, и ни одной сторис. Подписки молчат - проверяем реже.
+    if polls >= SESSION_MIN_POLLS:
+        return SessionCadence(username, "quiet", SESSION_COLD_SEC, items, polls, errors)
+
+    # Данных мало - не понижаем: новая сессия должна получить шанс.
+    return SessionCadence(username, "new", SESSION_WARM_SEC if polls else 0, items, polls, errors)
