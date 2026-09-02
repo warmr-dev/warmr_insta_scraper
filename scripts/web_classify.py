@@ -463,12 +463,29 @@ def _classify(reels: dict[int, list[Any]], names: dict[int, str], limit: int) ->
                 )
         except Exception as exc:  # noqa: BLE001 - одна плохая сторис не рушит прогон
             print(f"    @{name:20} ошибка: {type(exc).__name__}: {str(exc)[:60]}")
+            # Сбой БИЛЛИНГА или сети - не свойство сторис, а состояние сервиса:
+            # через час всё то же фото разберётся нормально. `failed` - конечное
+            # состояние, его никто не перепроверяет, поэтому пометить им сторис
+            # значит выбросить её навсегда из-за пустого счёта. Замерено: 402
+            # Payment Required от OpenRouter похоронил две живые сторис, и те же
+            # 402/таймауты объясняют 39 записей `failed` без строки анализа.
+            text_exc = str(exc)
+            transient = (
+                "402" in text_exc
+                or "429" in text_exc
+                or "Insufficient" in text_exc
+                or "credits" in text_exc.lower()
+                or isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+            )
             activity.record(
-                owner, "ai_scoring", status="error",
+                owner, "ai_scoring",
+                status="deferred" if transient else "error",
                 message=f"@{name}: {type(exc).__name__}: {str(exc)[:120]}",
                 targets=[name],
             )
-            _mark(item.story_id, "failed")
+            # Оставляем `new`: следующий цикл возьмёт её снова, пока сторис жива.
+            if not transient:
+                _mark(item.story_id, "failed")
         finally:
             # Медиа не переживает анализ (§7.4, §11).
             try:
