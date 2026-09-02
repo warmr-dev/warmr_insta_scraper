@@ -20,7 +20,6 @@ from __future__ import annotations
 import datetime as dt
 import os
 import pathlib
-import random
 import signal
 import sys
 import time
@@ -138,11 +137,15 @@ def main() -> int:
 
         # Живой человек не открывает Instagram ровно раз в 60 секунд. Ровный
         # интервал - самый дешёвый признак автоматизации, какой только можно
-        # подарить: он виден даже без анализа содержимого запросов. Поэтому
-        # каждый цикл ждёт своё, случайное время: при interval=120 и
-        # jitter=0.5 это 60-180с, и два соседних цикла почти никогда не
-        # совпадают.
-        target = interval * random.uniform(1.0 - jitter, 1.0 + jitter)
+        # подарить: он виден даже без анализа содержимого запросов.
+        #
+        # Множитель считает webaccounts.pace_multiplier: случайный разброс
+        # 0.25x-1.5x, а ночью дополнительно умноженный на NIGHT_SLOWDOWN, когда
+        # цели почти не публикуют. LOOP_JITTER оставлен для совместимости: 0
+        # возвращает ровный интервал.
+        from stories_monitor.webaccounts import in_quiet_hours, pace_multiplier
+
+        target = interval * (pace_multiplier() if jitter else 1.0)
         sleep_for = max(1.0, target - elapsed) + backoff
 
         log.info(
@@ -150,6 +153,7 @@ def main() -> int:
             duration_sec=round(elapsed, 1),
             sleep_sec=round(sleep_for, 1),
             next_interval_sec=round(target, 1),
+            night=in_quiet_hours(),
             consecutive_failures=consecutive_failures,
             timestamp=dt.datetime.now(dt.UTC).isoformat(),
         )

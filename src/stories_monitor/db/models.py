@@ -227,6 +227,12 @@ class Cookie(Base):
     # separately from the feeds, so a stale copy beats collecting nothing.
     following: Mapped[list[Any] | None] = mapped_column(JSONB)
     following_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # Отдых после 401/429 и дневной бюджет (миграция 0007). В базе, а не только
+    # в памяти: иначе дашборд не может отличить отдыхающий аккаунт от сломанного.
+    rest_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    rest_strikes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requests_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requests_reset_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

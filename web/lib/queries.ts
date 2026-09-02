@@ -102,6 +102,15 @@ export type Account = {
   updated_at: string;
   last_error: string | null;
   cookie_count: number;
+  /** Wall-clock moment the collector may poll this account again, if resting. */
+  rest_until: string | null;
+  /** Consecutive rate-limits. One is bad luck; several means Instagram is pushing back. */
+  rest_strikes: number;
+  requests_today: number;
+  /** Whether the browser's own User-Agent was captured with the cookies. */
+  has_user_agent: boolean;
+  following_count: number;
+  following_at: string | null;
 };
 
 export async function getAccounts(): Promise<Account[]> {
@@ -121,7 +130,18 @@ export async function getAccounts(): Promise<Account[]> {
               + CASE WHEN mid        IS NOT NULL AND mid        <> '' THEN 1 ELSE 0 END
               + CASE WHEN datr       IS NOT NULL AND datr       <> '' THEN 1 ELSE 0 END
               + CASE WHEN rur        IS NOT NULL AND rur        <> '' THEN 1 ELSE 0 END
-               ) AS cookie_count
+               ) AS cookie_count,
+               -- Only report a rest that is still in force; a past one is noise.
+               CASE WHEN rest_until > now()
+                    THEN to_char(rest_until AT TIME ZONE 'UTC',
+                                 'YYYY-MM-DD"T"HH24:MI:SS"Z"') END AS rest_until,
+               rest_strikes,
+               CASE WHEN requests_reset_at > now() - interval '24 hours'
+                    THEN requests_today ELSE 0 END AS requests_today,
+               (user_agent IS NOT NULL AND user_agent <> '') AS has_user_agent,
+               coalesce(jsonb_array_length(following), 0) AS following_count,
+               to_char(following_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS following_at
         FROM cookies
         ORDER BY is_active DESC, username
       `),

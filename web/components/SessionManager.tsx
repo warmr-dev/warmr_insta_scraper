@@ -6,6 +6,13 @@ import type { Account } from "@/lib/queries";
 
 const INSTAGRAM_URL = "https://www.instagram.com/";
 
+/** "12m" - how long until a resting account is polled again. */
+function minutesLeft(iso: string | null): string {
+  if (!iso) return "";
+  const mins = Math.max(0, (new Date(iso).getTime() - Date.now()) / 60000);
+  return mins < 60 ? `${Math.round(mins)}m` : `${(mins / 60).toFixed(1)}h`;
+}
+
 export function SessionManager({ accounts }: { accounts: Account[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -241,6 +248,7 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
               <th className="px-4 py-3 font-medium">Account</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Cookies</th>
+              <th className="px-4 py-3 font-medium">Load (24h)</th>
               <th className="px-4 py-3 font-medium">Updated</th>
               <th className="px-4 py-3 font-medium">Last error</th>
               <th className="px-4 py-3 font-medium"></th>
@@ -249,7 +257,7 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
           <tbody className="divide-y divide-slate-800">
             {accounts.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                   No sessions yet — add one to start collecting.
                 </td>
               </tr>
@@ -258,20 +266,43 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
                 <tr key={account.username} className="hover:bg-slate-900/40">
                   <td className="px-4 py-3 font-medium">@{account.username}</td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${
-                        account.is_active
-                          ? "bg-emerald-950/60 text-emerald-300"
-                          : "bg-red-950/60 text-red-300"
-                      }`}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          account.is_active ? "bg-emerald-400" : "bg-red-400"
-                        }`}
-                      />
-                      {account.is_active ? "Live" : "Dead"}
-                    </span>
+                    {/* Three states, not two. A resting account is healthy and
+                        deliberately paused - showing it as "Live" hid why it
+                        collected nothing, and "Dead" would be a lie. */}
+                    {(() => {
+                      const resting =
+                        account.is_active && Boolean(account.rest_until);
+                      const cls = !account.is_active
+                        ? "bg-red-950/60 text-red-300"
+                        : resting
+                          ? "bg-amber-950/60 text-amber-300"
+                          : "bg-emerald-950/60 text-emerald-300";
+                      const dot = !account.is_active
+                        ? "bg-red-400"
+                        : resting
+                          ? "bg-amber-400"
+                          : "bg-emerald-400";
+                      const label = !account.is_active
+                        ? "Dead"
+                        : resting
+                          ? `Resting ${minutesLeft(account.rest_until)}`
+                          : "Live";
+                      const hint = resting
+                        ? `Instagram rate-limited this session ${account.rest_strikes}x in a row; ` +
+                          `polling resumes automatically at ${new Date(
+                            account.rest_until as string,
+                          ).toLocaleTimeString()}`
+                        : undefined;
+                      return (
+                        <span
+                          title={hint}
+                          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${cls}`}
+                        >
+                          <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+                          {label}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 tabular-nums">
                     <span
@@ -280,6 +311,30 @@ export function SessionManager({ accounts }: { accounts: Account[] }) {
                       }
                     >
                       {account.cookie_count}/7
+                    </span>
+                    {!account.has_user_agent && (
+                      <span
+                        className="ml-2 text-xs text-amber-400"
+                        title="No browser User-Agent stored. datr is tied to the browser it came from, so a session replayed under a different one expires sooner. Re-paste these cookies here to capture it."
+                      >
+                        no UA
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    <span
+                      className={
+                        Number(account.requests_today) > 300 ? "text-amber-400" : ""
+                      }
+                      title="Requests this account has made to Instagram in the last 24 hours, against the daily budget."
+                    >
+                      {account.requests_today} req
+                    </span>
+                    <span
+                      className="ml-2 text-slate-600"
+                      title="Accounts this session follows, from the cached list the collector polls."
+                    >
+                      {account.following_count} follows
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-400">

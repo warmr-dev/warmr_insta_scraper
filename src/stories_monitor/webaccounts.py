@@ -294,7 +294,15 @@ DAILY_REQUEST_BUDGET = int(os.environ.get("DAILY_REQUEST_BUDGET", "400"))
 # убирает примерно треть суточных запросов, не теряя почти ничего.
 QUIET_HOURS_START = int(os.environ.get("QUIET_HOURS_START", "18"))
 QUIET_HOURS_END = int(os.environ.get("QUIET_HOURS_END", "4"))
-QUIET_HOURS_SKIP = int(os.environ.get("QUIET_HOURS_SKIP", "3"))
+
+# Во сколько раз растягивать паузу ночью. 1.0 - как днём, 4.0 - вчетверо реже.
+NIGHT_SLOWDOWN = float(os.environ.get("NIGHT_SLOWDOWN", "3.0"))
+
+# Разброс множителя интервала. Живой человек не открывает приложение по
+# расписанию: между заходами то минута, то полчаса. Диапазон 0.25x-1.5x даёт
+# именно такую неровность - иногда быстрее обычного, иногда заметно медленнее.
+PACE_MIN = float(os.environ.get("PACE_MIN", "0.25"))
+PACE_MAX = float(os.environ.get("PACE_MAX", "1.5"))
 
 
 def in_quiet_hours(now: dt.datetime | None = None) -> bool:
@@ -305,25 +313,59 @@ def in_quiet_hours(now: dt.datetime | None = None) -> bool:
     return hour >= QUIET_HOURS_START or hour < QUIET_HOURS_END
 
 
-def _requests_today(username: str) -> int:
-    """Сколько обращений к Instagram этот аккаунт сделал за сутки."""
+def pace_multiplier(now: dt.datetime | None = None) -> float:
+    """Множитель интервала для этого цикла.
+
+    Две составляющие, и обе важны по отдельности:
+
+    - СЛУЧАЙНОСТЬ. Ровный интервал - самый дешёвый признак автоматизации:
+      его видно, не читая ни одного запроса. Множитель 0.25x-1.5x означает,
+      что два соседних цикла почти никогда не совпадают по длине.
+    - СУТКИ. Замерено за 30 дней: 04:00-17:00 UTC дают втрое больше сторис,
+      чем 18:00-03:00. Ночью растягиваем интервал, а не пропускаем аккаунты -
+      так каждый аккаунт всё равно проверяется, просто реже.
+    """
+    base = random.uniform(PACE_MIN, PACE_MAX)
+    return base * NIGHT_SLOWDOWN if in_quiet_hours(now) else base
+
+
+def _bump_requests(username: str, count: int) -> int:
+    """Прибавить запросы к дневному счётчику и вернуть новое значение.
+
+    Счётчик живёт в `cookies`, а не считается по activity_log: тот чистится
+    раз в 48 часов, а бюджет, обнуляющийся вместе с логами, - не бюджет.
+    Окно скользит сутками от первого запроса.
+    """
     from sqlalchemy import text as sa_text
 
     try:
         with session_scope() as session:
-            return int(
-                session.execute(
-                    sa_text(
-                        "SELECT coalesce(sum(coalesce(item_count,1)),0) FROM activity_log "
-                        "WHERE username = :u AND phase IN ('poll','stories_found') "
-                        "AND occurred_at > now() - interval '24 hours'"
-                    ),
-                    {"u": username},
-                ).scalar()
-                or 0
-            )
+            row = session.execute(
+                sa_text(
+                    """
+                    UPDATE cookies
+                       SET requests_today = CASE
+                             WHEN requests_reset_at IS NULL
+                               OR requests_reset_at < now() - interval '24 hours'
+                             THEN :n ELSE requests_today + :n END,
+                           requests_reset_at = CASE
+                             WHEN requests_reset_at IS NULL
+                               OR requests_reset_at < now() - interval '24 hours'
+                             THEN now() ELSE requests_reset_at END
+                     WHERE username = :u
+                 RETURNING requests_today
+                    """
+                ),
+                {"u": username, "n": count},
+            ).scalar()
+            return int(row or 0)
     except Exception:  # noqa: BLE001 - бюджет не стоит цикла
         return 0
+
+
+def _requests_today(username: str) -> int:
+    """Текущий расход по дневному бюджету."""
+    return _bump_requests(username, 0)
 
 # Пауза между аккаунтами внутри цикла, секунды.
 _ACCOUNT_GAP_MIN = 3.0
@@ -345,6 +387,8 @@ def _cycle_counter() -> int:
 # Отдых после отказа: username -> момент, до которого аккаунт не трогаем.
 _RESTING: dict[str, float] = {}
 _STRIKES: dict[str, int] = {}
+# То же самое, но в настенном времени - монотонные часы нельзя показать человеку.
+_REST_UNTIL_WALL: dict[str, dt.datetime] = {}
 
 REST_BASE_SEC = int(os.environ.get("REST_BASE_SEC", "600"))
 REST_MAX_SEC = int(os.environ.get("REST_MAX_SEC", str(6 * 3600)))
@@ -354,11 +398,33 @@ def _rest(username: str) -> None:
     """Отправить аккаунт отдыхать с нарастающей паузой."""
     strikes = _STRIKES.get(username, 0) + 1
     _STRIKES[username] = strikes
+    # Экспоненциальный рост, но с разбросом: ровно 10/20/40 минут - это тоже
+    # узнаваемый почерк, просто более медленный.
     delay = min(REST_BASE_SEC * (2 ** (strikes - 1)), REST_MAX_SEC)
+    delay *= random.uniform(PACE_MIN + 0.5, PACE_MAX)
+    delay = min(delay, REST_MAX_SEC)
     _RESTING[username] = time.monotonic() + delay
+    until = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=delay)
+    _REST_UNTIL_WALL[username] = until
+    _persist_rest(username, until, strikes)
     log.warning(
         "account_resting", username=username, strikes=strikes, minutes=round(delay / 60)
     )
+
+
+def _persist_rest(username: str, until: dt.datetime | None, strikes: int) -> None:
+    """Записать отдых в базу - дашборд читает оттуда. Никогда не бросает."""
+    from sqlalchemy import update as sa_update
+
+    try:
+        with session_scope() as session:
+            session.execute(
+                sa_update(Cookie)
+                .where(Cookie.username == username)
+                .values(rest_until=until, rest_strikes=strikes)
+            )
+    except Exception as exc:  # noqa: BLE001 - статус не стоит цикла
+        log.warning("rest_persist_failed", username=username, error=str(exc)[:120])
 
 
 def _is_resting(username: str) -> bool:
@@ -375,6 +441,23 @@ def _clear_strikes(username: str) -> None:
     """Успешный опрос обнуляет счётчик - иначе пауза росла бы вечно."""
     _STRIKES.pop(username, None)
     _RESTING.pop(username, None)
+    _REST_UNTIL_WALL.pop(username, None)
+    _persist_rest(username, None, 0)
+
+
+def rest_state() -> dict[str, dict[str, Any]]:
+    """Кто сейчас отдыхает и до какого времени - для дашборда."""
+    now = dt.datetime.now(dt.UTC)
+    out: dict[str, dict[str, Any]] = {}
+    for username, until in list(_REST_UNTIL_WALL.items()):
+        if until <= now:
+            continue
+        out[username] = {
+            "until": until.isoformat(),
+            "minutes_left": round((until - now).total_seconds() / 60),
+            "strikes": _STRIKES.get(username, 0),
+        }
+    return out
 
 
 def collect_stories(
@@ -397,8 +480,6 @@ def collect_stories(
     status: dict[str, str] = {}
     SOURCE.clear()
 
-    quiet = in_quiet_hours()
-
     for index, account in enumerate(pool):
         # Дневной потолок. Аккаунт, упёршийся в него, пропускаем целиком:
         # предупреждение об автоматизации прилетает не за один запрос, а за
@@ -420,12 +501,6 @@ def collect_stories(
                 ),
             )
             log.info("account_budget_reached", username=account.username, used=used)
-            continue
-
-        # Тихие часы: цели почти не публикуют, поэтому опрашиваем реже. Не
-        # выключаем совсем - сторис ночью всё-таки случаются, - а прореживаем.
-        if quiet and (index + _cycle_counter()) % QUIET_HOURS_SKIP:
-            status[account.username] = "QUIET HOURS - polled less often"
             continue
 
         # Пауза между аккаунтами. 11 сессий подряд с одного IP - это всплеск,
@@ -548,6 +623,9 @@ def collect_stories(
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
 
+            # Учитываем реальную стоимость цикла: один запрос графа (если был)
+            # плюс по одному на каждые 20 подписок.
+            _bump_requests(account.username, max(1, -(-len(pairs) // 20)))
             _clear_strikes(account.username)
             status[account.username] = (
                 f"OK - {len(users)} followings with stories, {new_users} new for the pool"
