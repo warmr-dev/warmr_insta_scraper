@@ -281,6 +281,50 @@ FOLLOWING_TTL_SEC = int(os.environ.get("FOLLOWING_TTL_SEC", str(6 * 3600)))
 # сутки, чтобы это исправить, дороже, чем изредка попробовать граф.
 FOLLOWING_RETRY_SEC = int(os.environ.get("FOLLOWING_RETRY_SEC", str(30 * 60)))
 
+# Потолок запросов на аккаунт в сутки. Существует не ради экономии трафика, а
+# чтобы ни один аккаунт не мог набрать за день столько обращений, сколько живой
+# человек не сделает никогда. Замерено на реальных данных: 8 запросов в цикл
+# при 120с - это 5760 обращений в сутки на шесть аккаунтов, ради ~31 найденной
+# сторис. Один аккаунт, на котором Instagram показал предупреждение об
+# автоматизации, к тому моменту принял на себя сотни запросов подряд.
+DAILY_REQUEST_BUDGET = int(os.environ.get("DAILY_REQUEST_BUDGET", "400"))
+
+# Часы (UTC), когда цели почти не публикуют. Замерено за 30 дней: 04:00-17:00
+# дают втрое больше сторис, чем 18:00-03:00. Ночью опрашиваем реже - это
+# убирает примерно треть суточных запросов, не теряя почти ничего.
+QUIET_HOURS_START = int(os.environ.get("QUIET_HOURS_START", "18"))
+QUIET_HOURS_END = int(os.environ.get("QUIET_HOURS_END", "4"))
+QUIET_HOURS_SKIP = int(os.environ.get("QUIET_HOURS_SKIP", "3"))
+
+
+def in_quiet_hours(now: dt.datetime | None = None) -> bool:
+    """Сейчас тихие часы? Интервал может пересекать полночь."""
+    hour = (now or dt.datetime.now(dt.UTC)).hour
+    if QUIET_HOURS_START <= QUIET_HOURS_END:
+        return QUIET_HOURS_START <= hour < QUIET_HOURS_END
+    return hour >= QUIET_HOURS_START or hour < QUIET_HOURS_END
+
+
+def _requests_today(username: str) -> int:
+    """Сколько обращений к Instagram этот аккаунт сделал за сутки."""
+    from sqlalchemy import text as sa_text
+
+    try:
+        with session_scope() as session:
+            return int(
+                session.execute(
+                    sa_text(
+                        "SELECT coalesce(sum(coalesce(item_count,1)),0) FROM activity_log "
+                        "WHERE username = :u AND phase IN ('poll','stories_found') "
+                        "AND occurred_at > now() - interval '24 hours'"
+                    ),
+                    {"u": username},
+                ).scalar()
+                or 0
+            )
+    except Exception:  # noqa: BLE001 - бюджет не стоит цикла
+        return 0
+
 # Пауза между аккаунтами внутри цикла, секунды.
 _ACCOUNT_GAP_MIN = 3.0
 _ACCOUNT_GAP_MAX = 12.0
@@ -288,6 +332,49 @@ _ACCOUNT_GAP_MAX = 12.0
 # Кто из воркеров принёс сторис конкретной цели. Заполняется collect_stories и
 # читается фазой AI, чтобы в дашборде оценка была привязана к сессии.
 SOURCE: dict[int, str] = {}
+
+# Счётчик циклов: в тихие часы опрашиваем не всех, а по очереди, иначе одни и
+# те же аккаунты не проверялись бы всю ночь.
+_CYCLES = 0
+
+
+def _cycle_counter() -> int:
+    return _CYCLES
+
+
+# Отдых после отказа: username -> момент, до которого аккаунт не трогаем.
+_RESTING: dict[str, float] = {}
+_STRIKES: dict[str, int] = {}
+
+REST_BASE_SEC = int(os.environ.get("REST_BASE_SEC", "600"))
+REST_MAX_SEC = int(os.environ.get("REST_MAX_SEC", str(6 * 3600)))
+
+
+def _rest(username: str) -> None:
+    """Отправить аккаунт отдыхать с нарастающей паузой."""
+    strikes = _STRIKES.get(username, 0) + 1
+    _STRIKES[username] = strikes
+    delay = min(REST_BASE_SEC * (2 ** (strikes - 1)), REST_MAX_SEC)
+    _RESTING[username] = time.monotonic() + delay
+    log.warning(
+        "account_resting", username=username, strikes=strikes, minutes=round(delay / 60)
+    )
+
+
+def _is_resting(username: str) -> bool:
+    until = _RESTING.get(username)
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        _RESTING.pop(username, None)
+        return False
+    return True
+
+
+def _clear_strikes(username: str) -> None:
+    """Успешный опрос обнуляет счётчик - иначе пауза росла бы вечно."""
+    _STRIKES.pop(username, None)
+    _RESTING.pop(username, None)
 
 
 def collect_stories(
@@ -301,13 +388,46 @@ def collect_stories(
 
     Возвращает (сторис по user_id, имена, статусы аккаунтов).
     """
+    global _CYCLES
+    _CYCLES += 1
+
     pool = accounts if accounts is not None else load_accounts()
     merged: dict[int, list[Any]] = {}
     names: dict[int, str] = {}
     status: dict[str, str] = {}
     SOURCE.clear()
 
+    quiet = in_quiet_hours()
+
     for index, account in enumerate(pool):
+        # Дневной потолок. Аккаунт, упёршийся в него, пропускаем целиком:
+        # предупреждение об автоматизации прилетает не за один запрос, а за
+        # сотни подряд по одной сессии.
+        if _is_resting(account.username):
+            status[account.username] = "RESTING after a rate-limit - skipping"
+            continue
+
+        used = _requests_today(account.username)
+        if used >= DAILY_REQUEST_BUDGET:
+            status[account.username] = f"BUDGET REACHED - {used} requests in 24h, resting"
+            activity.record(
+                account.username,
+                "skipped",
+                status="budget",
+                message=(
+                    f"Rested: {used} requests in the last 24h, over the "
+                    f"{DAILY_REQUEST_BUDGET} budget"
+                ),
+            )
+            log.info("account_budget_reached", username=account.username, used=used)
+            continue
+
+        # Тихие часы: цели почти не публикуют, поэтому опрашиваем реже. Не
+        # выключаем совсем - сторис ночью всё-таки случаются, - а прореживаем.
+        if quiet and (index + _cycle_counter()) % QUIET_HOURS_SKIP:
+            status[account.username] = "QUIET HOURS - polled less often"
+            continue
+
         # Пауза между аккаунтами. 11 сессий подряд с одного IP - это всплеск,
         # которого у живого человека быть не может; вразброс он выглядит как
         # несколько разных людей, а не как один скрипт.
@@ -428,6 +548,7 @@ def collect_stories(
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
 
+            _clear_strikes(account.username)
             status[account.username] = (
                 f"OK - {len(users)} followings with stories, {new_users} new for the pool"
             )
@@ -458,6 +579,11 @@ def collect_stories(
                 detail="is_active=false; refresh the row in the cookies table",
             )
         except RateLimitedError as exc:
+            # 401/429 - это предупредительный выстрел. Продолжать опрашивать
+            # аккаунт через полторы минуты после него - ровно то поведение,
+            # которое доводит до видимого пользователю предупреждения об
+            # автоматизации. Отдыхаем, и тем дольше, чем чаще прилетает.
+            _rest(account.username)
             # Временно, аккаунт не трогаем - отключать его было бы ошибкой.
             activity.record(
                 account.username,
