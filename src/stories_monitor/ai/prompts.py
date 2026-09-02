@@ -54,12 +54,18 @@ seeking_contractor and explicit_purchase_intent to FALSE:
   or screenshot, the poster is amplifying it, not requesting anything.
 - Events: conferences, meetups, hackathons, workshops, webinars, demo days,
   festivals. A tech conference is not a request for software development.
-- Job vacancies, hiring posts and recruitment. A company hiring staff is not a
-  customer buying a service.
+- Job vacancies and recruitment for NON-TECHNICAL roles. A shop hiring a cashier
+  is not a customer buying a service.
+  EXCEPTION: somebody looking for a developer, engineer, designer or other
+  technical specialist IS a lead - see TECHNICAL HIRING below. It does not
+  matter whether they frame it as a job, a contract or a freelance gig.
 - Courses, bootcamps, education, and calls for applications or registration.
 - Announcements, news, awards, launches, partnerships, and company updates.
 - Anything with "register", "apply", "join us", "tickets", "sign up",
-  "we're hiring", "открыт набор", "регистрация", "вакансия".
+  "открыт набор", "регистрация".
+  These words do NOT disqualify a story that is itself looking for a technical
+  specialist: "we're hiring a backend developer" is a lead, "register for our
+  conference" is not.
 
 Naming an industry is not requesting it. "AI conference", "startup summit" or
 "IT forum" mention a field without anybody asking to hire anyone in it. If you
@@ -80,6 +86,12 @@ ALLOWED CATEGORIES - the client buys B2B and professional services only.
 - CPA, accounting, bookkeeping
 - financial advisors
 - recruiting agencies (as a service the poster wants to BUY)
+- software development: backend, frontend, full-stack, mobile, web
+- data engineering, machine learning, AI development
+- DevOps, cloud infrastructure, SRE
+- QA and test automation
+- UI/UX and product design
+- technical staffing: contract, freelance or permanent
 
 Everything else is out of scope, however genuine the request: restaurants,
 cafes, hookah lounges, florists, retail, beauty, nails, tattoos, plumbing,
@@ -88,8 +100,9 @@ For those set allowed_category FALSE and score AT MOST 4, even when somebody is
 clearly hiring. A real request in the wrong category is still not our lead.
 
 ALWAYS REJECT - score 0-2 regardless of anything else:
-- job hunting, CVs, resumes, "ищу работу", "open to work"
-- job vacancies and recruitment posts
+- job hunting, CVs, resumes, "ищу работу", "open to work". Somebody offering
+  THEMSELVES is never a lead, technical or not.
+- job vacancies and recruitment posts for non-technical roles
 - offering one's own services
 - paid partnership and collaboration pitches, influencer outreach
 - barter, exchanges, "взаимопиар"
@@ -114,6 +127,17 @@ Test it this way: after reading the story, who sends the next message? If
 strangers message the poster, the poster is selling. If the poster would message
 a provider, the poster is a lead.
 
+TECHNICAL HIRING IS A STRONG LEAD. Somebody looking for a developer, engineer,
+designer or other technical specialist is exactly the customer this client
+serves. Treat it as seeking_contractor TRUE and allowed_category TRUE, and score
+it 7 or above when the role is named:
+- "I am looking for a backend developer", "ищу разработчика", "need a frontend dev"
+- "hiring a mobile engineer", "looking for a DevOps specialist", "need a QA"
+- freelance, contract and permanent all count; so does an agency or a person.
+The distinction that matters is DIRECTION, not employment type: somebody who
+wants to PAY a technical specialist is a lead. Somebody offering their OWN
+technical skills ("open to work", a portfolio, a CV) is not, ever.
+
 THE SCORE MUST FOLLOW THE FLAGS. This is arithmetic, not judgement:
 - If seeking_contractor is false AND explicit_purchase_intent is false, the score
   is AT MOST 2. No exceptions. A story where nobody is asking to hire or buy is
@@ -128,12 +152,14 @@ somebody is asking for a kitchen fitter.
 
 SCORING GUIDE:
 - 0-2: not a lead. Personal life, memes, reposts, spam, self-promotion, events,
-  announcements, vacancies, courses, or anything posted by an organisation.
+  announcements, non-technical vacancies, courses, job hunting, or anything
+  posted by an organisation that is not itself hiring a technical specialist.
 - 3-4: vague or hypothetical interest, no actionable request.
 - 5-6: plausible lead but ambiguous - unclear need, unclear intent, or unclear
   whether the poster is asking or offering.
 - 7-8: clear request for a service provider.
-- 9-10: explicit hiring request with a concrete need and contact route.
+- 9-10: explicit hiring request with a concrete need and contact route. A named
+  technical role with a stated stack or system belongs here.
 
 Set is_offering_services, is_spam, asking_for_free, or complaint_only to true when
 they apply, and score accordingly - those are not leads.
@@ -177,7 +203,9 @@ CATEGORY GATE, applied first. The client buys B2B and professional services:
 Meta Ads and digital marketing, Reddit marketing, SEO, content management,
 Webflow or WordPress development, CRM analytics, HubSpot, Salesforce, packaging
 design, co-packing, immigration and legal, CPA and accounting, financial
-advisors, recruiting agencies.
+advisors, recruiting agencies, and ALL technical hiring - software development
+(backend, frontend, mobile, full-stack), data and ML engineering, DevOps and
+cloud, QA, and UI/UX design, whether contract, freelance or permanent.
 
 Anything outside that list is confirmed false, score at most 4, no matter how
 genuine the request is. Somebody urgently hiring a plumber, florist or nail
@@ -192,7 +220,9 @@ Set confirmed FALSE and score 0-2 for all of these:
   "DM to order", "shopping in X, write me" - the poster is the seller.
 - Reposts and shared content: somebody else's poster, flyer or screenshot.
 - Events: conferences, meetups, hackathons, workshops, demo days, festivals.
-- Job vacancies and recruitment. A company hiring staff is not buying a service.
+- Job vacancies and recruitment for NON-TECHNICAL roles. A company hiring a
+  cashier is not buying a service; a company hiring a backend developer IS the
+  customer this client serves, and is confirmed true.
 - Courses, education, calls for applications, registration drives.
 - Announcements, news, awards, launches, company updates.
 - Posts by organisations, brands, venues, media, universities, communities.
