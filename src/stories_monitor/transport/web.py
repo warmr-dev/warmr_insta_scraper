@@ -111,6 +111,43 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
     return cookies
 
 
+# Пул соединений по аккаунтам. Живёт столько же, сколько процесс: цикл
+# создаёт WebTransport заново каждый раз, а рукопожатие должно случиться один
+# раз, а не 30 раз в час на каждый аккаунт.
+_CLIENTS: dict[str, httpx.Client] = {}
+
+
+def _client_for(key: str, *, timeout: float, headers: dict[str, str]) -> httpx.Client:
+    """Соединение для этого аккаунта, создаваемое один раз."""
+    existing = _CLIENTS.get(key)
+    if existing is not None and not existing.is_closed:
+        # Куки и заголовки могли обновиться (новая вставка cookies, свой UA).
+        existing.headers.update(headers)
+        return existing
+
+    client = httpx.Client(
+        timeout=timeout,
+        follow_redirects=False,  # a 302 means "not authorised", not "go here"
+        headers=headers,
+        # Держим соединение живым между циклами - как браузер.
+        limits=httpx.Limits(
+            max_keepalive_connections=1, max_connections=2, keepalive_expiry=600.0
+        ),
+    )
+    _CLIENTS[key] = client
+    return client
+
+
+def close_all_connections() -> None:
+    """Закрыть все пулы. Для остановки процесса и для тестов."""
+    for client in list(_CLIENTS.values()):
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - закрытие не должно ничего ронять
+            pass
+    _CLIENTS.clear()
+
+
 class WebTransport:
     """Reads the story tray and story items using browser cookies.
 
@@ -141,6 +178,9 @@ class WebTransport:
 
         self.cookies = jar
         self.user_id = jar.get("ds_user_id", "")
+        # Ключ пула соединений. ds_user_id стабилен для аккаунта и переживает
+        # обновление куки, поэтому вставка свежих куки не рвёт соединение.
+        self.username_key = self.user_id or jar.get("sessionid", "")[:24]
 
         # The browser these cookies came from. `datr` is Facebook's DEVICE
         # identity cookie - it is minted for one browser on one machine and
@@ -166,9 +206,19 @@ class WebTransport:
         # first response.
         self._www_claim = ""
 
-        self._client = httpx.Client(
+        # Одно соединение на сессию, переживающее циклы.
+        #
+        # Замерено, и это оказалось НЕ про частоту: 10 запросов подряд по
+        # одному соединению - 10 раз 200; те же 10 запросов, каждый со своим
+        # новым соединением - четыре 401. Медленнее (пауза 3с) давало БОЛЬШЕ
+        # ошибок, чем без пауз, чего лимитер частоты дать не может.
+        #
+        # Дело в TLS-рукопожатии: браузер держит соединение открытым и шлёт по
+        # нему десятки запросов, а мы открывали новое на каждый аккаунт в
+        # каждом цикле. Именно эта картина и ловилась как "не браузер".
+        self._client = _client_for(
+            self.username_key,
             timeout=timeout,
-            follow_redirects=False,  # a 302 means "not authorised", not "go here"
             headers={
                 "User-Agent": self.user_agent,
                 "X-IG-App-ID": _WEB_APP_ID,
@@ -183,6 +233,7 @@ class WebTransport:
                 "Sec-Fetch-Dest": "empty",
             },
         )
+
 
     # --- requests ---
 
@@ -387,7 +438,12 @@ class WebTransport:
         return dest_path
 
     def close(self) -> None:
-        self._client.close()
+        """Отпустить транспорт, НЕ закрывая соединение.
+
+        Соединение переиспользуется между циклами - в этом весь смысл. Явно
+        закрыть пул можно через `close_all_connections()` при остановке.
+        """
+        return
 
 
 def story_age_hours(item: StoryItem, now: dt.datetime | None = None) -> float:
