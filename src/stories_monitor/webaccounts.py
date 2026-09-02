@@ -15,6 +15,8 @@ import datetime as dt
 import os
 import random
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,7 +24,7 @@ from sqlalchemy import select
 
 from . import activity
 from .db.models import Cookie
-from .db.session import session_scope
+from .db.session import get_sessionmaker, session_scope
 from .logging_setup import get_logger
 from .transport.base import LoginRequiredError, RateLimitedError, TransportError
 from .transport.web import COOKIE_NAMES, WebTransport, parse_cookie_header
@@ -374,6 +376,51 @@ _ACCOUNT_GAP_MAX = 12.0
 # Кто из воркеров принёс сторис конкретной цели. Заполняется collect_stories и
 # читается фазой AI, чтобы в дашборде оценка была привязана к сессии.
 SOURCE: dict[int, str] = {}
+
+# Ключ advisory-блокировки Postgres. Произвольное, но постоянное число.
+_COLLECT_LOCK_KEY = 728_411_003
+
+
+@contextmanager
+def collection_lock() -> Iterator[bool]:
+    """Взять глобальную блокировку сбора. Отдаёт False, если уже занята.
+
+    Зачем: при передеплое Railway старый контейнер ещё жив, когда новый уже
+    стартовал, и оба идут по одним и тем же аккаунтам. Замерено в логах - два
+    цикла с разницей в 7 секунд, аккаунт опрошен дважды за 8 секунд, и второй
+    запрос получил 401. То есть часть троттлинга мы устраивали себе сами.
+
+    `pg_try_advisory_lock` не ждёт: второй процесс просто пропускает цикл.
+    Блокировка снимается вместе с соединением, поэтому упавший контейнер её не
+    удерживает.
+    """
+    from sqlalchemy import text as sa_text
+
+    session = None
+    acquired = False
+    try:
+        session = get_sessionmaker()()
+        acquired = bool(
+            session.execute(
+                sa_text("SELECT pg_try_advisory_lock(:k)"), {"k": _COLLECT_LOCK_KEY}
+            ).scalar()
+        )
+        yield acquired
+    except Exception as exc:  # noqa: BLE001 - без блокировки лучше работать, чем стоять
+        log.warning("collection_lock_failed", error=str(exc)[:120])
+        yield True
+    finally:
+        if session is not None:
+            try:
+                if acquired:
+                    session.execute(
+                        sa_text("SELECT pg_advisory_unlock(:k)"),
+                        {"k": _COLLECT_LOCK_KEY},
+                    )
+                    session.commit()
+            except Exception:  # noqa: BLE001
+                pass
+            session.close()
 
 # Счётчик циклов: в тихие часы опрашиваем не всех, а по очереди, иначе одни и
 # те же аккаунты не проверялись бы всю ночь.

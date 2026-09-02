@@ -51,6 +51,22 @@ def _handle_stop(signum: int, _frame: FrameType | None) -> None:
 
 def _cycle(limit: int) -> bool:
     """Один цикл. True - хотя бы один аккаунт ответил."""
+    from stories_monitor.webaccounts import collection_lock
+
+    # Один сборщик за раз на всю базу. При передеплое старый контейнер ещё
+    # жив, когда новый уже стартовал: в логах видно два цикла с разницей в 7
+    # секунд и аккаунт, опрошенный дважды за 8 секунд - второй раз с 401.
+    with collection_lock() as acquired:
+        if not acquired:
+            log.info(
+                "cycle_skipped",
+                detail="another collector holds the lock - likely a deploy overlap",
+            )
+            return True
+        return _run_cycle(limit)
+
+
+def _run_cycle(limit: int) -> bool:
     from web_classify import _classify
 
     accounts = load_accounts()
@@ -65,6 +81,7 @@ def _cycle(limit: int) -> bool:
         targets=[a.username for a in accounts],
         item_count=len(accounts),
     )
+
 
     reels, names, status = collect_stories(accounts)
     working = [u for u, s in status.items() if s.startswith("OK")]
