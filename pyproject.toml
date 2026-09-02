@@ -14,7 +14,9 @@ dependencies = [
     "redis>=5.2",
     "structlog>=24.4",
     "cryptography>=44.0",
-    "httpx>=0.28",
+    # httpx[http2]: настоящий Chrome всегда ходит на instagram.com по h2;
+    # без пакета h2 httpx молча остаётся на HTTP/1.1.
+    "httpx[http2]>=0.28",
     "pillow>=11.0",
     "pytesseract>=0.3.13",
     "anthropic>=0.40",

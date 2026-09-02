@@ -111,6 +111,33 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
     return cookies
 
 
+def _client_hints(user_agent: str) -> dict[str, str]:
+    """sec-ch-ua* заголовки, согласованные с User-Agent.
+
+    Chrome шлёт их на каждый XHR. Их отсутствие - признак не-браузера, а
+    несовпадение версии с UA - признак подделки, что хуже отсутствия.
+    """
+    import re
+
+    match = re.search(r"Chrome/(\d+)", user_agent)
+    if not match:
+        return {}
+    version = match.group(1)
+    platform = '"Windows"' if "Windows" in user_agent else (
+        '"Android"' if "Android" in user_agent else
+        '"macOS"' if "Mac OS X" in user_agent else '"Linux"'
+    )
+    mobile = "?1" if "Mobile" in user_agent else "?0"
+    return {
+        "sec-ch-ua": (
+            f'"Chromium";v="{version}", "Google Chrome";v="{version}", '
+            '"Not?A_Brand";v="99"'
+        ),
+        "sec-ch-ua-mobile": mobile,
+        "sec-ch-ua-platform": platform,
+    }
+
+
 # Пул соединений по аккаунтам. Живёт столько же, сколько процесс: цикл
 # создаёт WebTransport заново каждый раз, а рукопожатие должно случиться один
 # раз, а не 30 раз в час на каждый аккаунт.
@@ -129,6 +156,14 @@ def _client_for(key: str, *, timeout: float, headers: dict[str, str]) -> httpx.C
         timeout=timeout,
         follow_redirects=False,  # a 302 means "not authorised", not "go here"
         headers=headers,
+        # HTTP/2, потому что настоящий Chrome всегда договаривается на h2 с
+        # instagram.com. Клиент, который ходит по HTTP/1.1 с User-Agent Chrome,
+        # противоречит сам себе ещё до первого заголовка. В instaloader #2655
+        # разобран случай, где хост получал 429 на ПЕРВЫЙ же запрос по 1.1 и
+        # нормально работал по h2 - то есть отказ был по отпечатку, а не по
+        # частоте. Требует пакета h2 (httpx[http2]); без него httpx промолчит
+        # и останется на 1.1, поэтому зависимость закреплена явно.
+        http2=True,
         # Держим соединение живым между циклами - как браузер.
         limits=httpx.Limits(
             max_keepalive_connections=1, max_connections=2, keepalive_expiry=600.0
@@ -231,6 +266,10 @@ class WebTransport:
                 "Sec-Fetch-Site": "same-origin",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Dest": "empty",
+                # Client hints должны СОВПАДАТЬ с версией в User-Agent: UA
+                # Chrome/142 рядом с sec-ch-ua "Chromium";v="108" - бесплатная
+                # улика. Поэтому выводим их из самого UA, а не пишем константой.
+                **_client_hints(self.user_agent),
             },
         )
 
@@ -269,6 +308,16 @@ class WebTransport:
             raise RateLimitedError("web API rate limited (429)")
         if response.status_code == 403:
             raise LoginRequiredError("web API rejected the session (403)")
+        # Тело важнее кода. Instagram отвечает 401/429 с текстом "Please wait a
+        # few minutes before you try again" - это мягкий бан на минуты, а не
+        # мёртвая сессия и не обычный лимит. Отличать надо по телу: instagrapi
+        # #1476 - ровно про то, что 401 не проверяли и лечили не то.
+        if response.status_code in (401, 429):
+            body = response.text[:300].lower()
+            if "wait a few minutes" in body or "please wait" in body:
+                raise RateLimitedError(
+                    f"soft block on {path}: Instagram asked to wait a few minutes"
+                )
         if response.status_code == 401:
             # NOT an expired session. Measured across 11 accounts: four answered
             # 401 on `friendships/.../following/` while serving `reels_media`
