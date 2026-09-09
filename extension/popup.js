@@ -1,8 +1,8 @@
 /** Popup UI: status, the two buttons that matter, and the settings form. */
 
 const FIELDS = [
-  "apiBase",
-  "token",
+  "supabaseUrl",
+  "anonKey",
   "session",
   "cookieHours",
   "dailyLimit",

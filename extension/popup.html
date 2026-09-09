@@ -72,11 +72,15 @@
     <details>
       <summary>Settings</summary>
 
-      <label>Dashboard URL</label>
-      <input id="apiBase" placeholder="https://your-dashboard.example.com" />
+      <label>Supabase URL</label>
+      <input id="supabaseUrl" placeholder="https://xxxxxxxx.supabase.co" />
 
-      <label>Extension token</label>
-      <input id="token" type="password" placeholder="EXTENSION_TOKEN" />
+      <label>Supabase anon key</label>
+      <input id="anonKey" type="password" placeholder="eyJhbGciOi..." />
+      <div class="hint">
+        Project Settings → API. The anon key is safe here: every table stays
+        closed to it, and it can only call the four follow functions.
+      </div>
 
       <label>Instagram username (blank = detect)</label>
       <input id="session" placeholder="detected automatically" />

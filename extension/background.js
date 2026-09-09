@@ -14,8 +14,11 @@
  */
 
 const DEFAULTS = {
-  apiBase: "",
-  token: "",
+  // Supabase project URL, e.g. https://abcdefgh.supabase.co
+  supabaseUrl: "",
+  // The project's anon key. Safe to hold here: RLS keeps every table closed to
+  // it, and the only things it can do are the four ext_* functions.
+  anonKey: "",
   session: "",
   enabled: false,
   // How many follows per day. 0 means unlimited - the rhythm still paces it.
@@ -98,20 +101,32 @@ function awake(cfg) {
 
 // --- server ---------------------------------------------------------------
 
-async function api(cfg, path, body) {
-  const response = await fetch(`${cfg.apiBase.replace(/\/$/, "")}${path}`, {
+/**
+ * Call one of the database functions the extension is allowed to use.
+ *
+ * PostgREST exposes them under /rest/v1/rpc/<name>. Tables are NOT reachable
+ * with this key - migration 0003 keeps them closed to `anon`, and migration
+ * 0011 grants EXECUTE on exactly these four functions. So the worst a stolen
+ * key can do is scramble the follow queue; it cannot read session cookies,
+ * leads or stories.
+ */
+async function rpc(cfg, fn, args) {
+  const base = cfg.supabaseUrl.replace(/\/$/, "");
+  const response = await fetch(`${base}/rest/v1/rpc/${fn}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.token}`,
+      apikey: cfg.anonKey,
+      Authorization: `Bearer ${cfg.anonKey}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(args),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`${path} -> ${response.status} ${text.slice(0, 120)}`);
+    throw new Error(`${fn} -> ${response.status} ${text.slice(0, 160)}`);
   }
-  return response.json();
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 }
 
 // --- cookies --------------------------------------------------------------
@@ -124,7 +139,7 @@ async function api(cfg, path, body) {
  */
 async function refreshCookies(reason = "scheduled") {
   const cfg = await config();
-  if (!cfg.apiBase || !cfg.token) {
+  if (!cfg.supabaseUrl || !cfg.anonKey) {
     await log("cookie refresh skipped: extension not configured yet", "warn");
     return { ok: false, error: "not configured" };
   }
@@ -147,15 +162,22 @@ async function refreshCookies(reason = "scheduled") {
   }
 
   try {
-    const result = await api(cfg, "/api/extension-cookies", {
-      username,
-      cookies: jar,
-      user_agent: navigator.userAgent,
+    await rpc(cfg, "ext_save_cookies", {
+      p_username: username,
+      p_sessionid: jar.sessionid,
+      p_csrftoken: jar.csrftoken ?? null,
+      p_ds_user_id: jar.ds_user_id ?? null,
+      p_ig_did: jar.ig_did ?? null,
+      p_mid: jar.mid ?? null,
+      p_datr: jar.datr ?? null,
+      p_rur: jar.rur ?? null,
+      p_user_agent: navigator.userAgent,
     });
+    const missing = COOKIE_NAMES.filter((n) => !jar[n]);
     await chrome.storage.local.set({ session: username, lastCookieSync: Date.now() });
     await log(
       `cookies refreshed for ${username} (${reason})${
-        result.missing?.length ? `, missing: ${result.missing.join(", ")}` : ""
+        missing.length ? `, missing: ${missing.join(", ")}` : ""
       }`,
     );
     return { ok: true, username };
@@ -214,6 +236,14 @@ function waitForLoad(tabId, timeoutMs = 30000) {
 
 /** Open one profile, click Follow, close the tab, report the outcome. */
 async function followOne(cfg, target) {
+  // Flag it before the tab opens, so the dashboard shows what this profile is
+  // touching right now rather than only after the fact. Best-effort: a status
+  // flag is never worth losing a follow over.
+  await rpc(cfg, "ext_begin_check", {
+    p_session: cfg.session,
+    p_target: Number(target.id),
+  }).catch(() => {});
+
   const tab = await chrome.tabs.create({ url: target.url, active: false });
   let result = { outcome: "failed", detail: "tab never loaded" };
 
@@ -229,12 +259,12 @@ async function followOne(cfg, target) {
   }
 
   try {
-    await api(cfg, "/api/follow-result", {
-      session: cfg.session,
-      target_id: target.id,
-      username: target.username,
-      outcome: result.outcome,
-      detail: result.detail ?? null,
+    await rpc(cfg, "ext_report_follow", {
+      p_session: cfg.session,
+      p_target: Number(target.id),
+      p_username: target.username,
+      p_outcome: result.outcome,
+      p_detail: result.detail ?? null,
     });
   } catch (error) {
     await log(`could not report ${target.username}: ${error.message}`, "error");
@@ -252,8 +282,8 @@ async function followOne(cfg, target) {
 async function tick() {
   const cfg = await config();
   if (!cfg.enabled) return;
-  if (!cfg.apiBase || !cfg.token) {
-    await log("not configured - open the popup and set the server and token", "warn");
+  if (!cfg.supabaseUrl || !cfg.anonKey) {
+    await log("not configured - open the popup and set the Supabase URL and key", "warn");
     return;
   }
 
@@ -289,11 +319,16 @@ async function tick() {
   let queue = st.queue;
   if (queue.length === 0) {
     try {
-      const data = await api(cfg, "/api/follow-queue", {
-        session: cfg.session,
-        limit: 10,
+      const rows = await rpc(cfg, "ext_claim_targets", {
+        p_session: cfg.session,
+        p_limit: 10,
       });
-      queue = data.targets ?? [];
+      queue = (rows ?? []).map((r) => ({
+        id: String(r.target_user_id),
+        username: r.username,
+        is_private: r.is_private,
+        url: `https://www.instagram.com/${r.username}/`,
+      }));
       await chrome.storage.local.set({ queue });
       await log(`claimed ${queue.length} targets`);
     } catch (error) {
@@ -320,12 +355,12 @@ async function tick() {
     const until = Date.now() + rand(24, 48) * 3600 * 1000;
     await chrome.storage.local.set({ blockedUntil: until, queue: [] });
     for (const item of queue.slice(1)) {
-      await api(cfg, "/api/follow-result", {
-        session: cfg.session,
-        target_id: item.id,
-        username: item.username,
-        outcome: "throttled",
-        detail: "released after action block",
+      await rpc(cfg, "ext_report_follow", {
+        p_session: cfg.session,
+        p_target: Number(item.id),
+        p_username: item.username,
+        p_outcome: "throttled",
+        p_detail: "released after action block",
       }).catch(() => {});
     }
     await log(`ACTION BLOCK on ${target.username} - pausing follows`, "error");

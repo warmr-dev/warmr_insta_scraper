@@ -2,18 +2,35 @@
   "manifest_version": 3,
   "name": "Warmr Follower",
   "version": "1.0.0",
-  "description": "Follows assigned Instagram accounts from this browser profile and keeps its session cookies fresh in Supabase.",
-  "permissions": ["storage", "alarms", "cookies", "tabs", "scripting"],
+  "description": "Follows assigned Instagram accounts from this browser profile and keeps its session tokens fresh in Supabase.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "cookies",
+    "tabs",
+    "scripting"
+  ],
   "host_permissions": [
     "https://www.instagram.com/*",
-    "https://*.instagram.com/*"
+    "https://*.instagram.com/*",
+    "https://*.supabase.co/*"
   ],
-  "background": { "service_worker": "background.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "Warmr Follower" },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Warmr Follower"
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.instagram.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

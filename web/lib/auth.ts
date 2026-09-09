@@ -91,25 +91,3 @@ export async function requireSession(): Promise<string> {
   return email;
 }
 
-/**
- * Authenticate the Chrome extension.
- *
- * A bearer token rather than the session cookie: the extension runs in a
- * browser profile logged into Instagram, not into this dashboard, and asking
- * an operator to keep a dashboard session alive in every Instagram profile
- * would be both fragile and a reason to share one login everywhere.
- *
- * The token is a single shared secret in EXTENSION_TOKEN. It authorises
- * claiming targets and reporting results - not reading leads - so the blast
- * radius of a leaked token is a wasted follow budget, not the lead pipeline.
- */
-export function checkExtensionToken(request: Request): boolean {
-  const expected = process.env.EXTENSION_TOKEN ?? "";
-  if (!expected) return false;
-
-  const header = request.headers.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!token) return false;
-
-  return safeEqual(token, expected);
-}

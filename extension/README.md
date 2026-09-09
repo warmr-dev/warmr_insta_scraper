@@ -26,22 +26,38 @@ One Chrome profile per Instagram account. In each profile:
 2. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → pick
    this `extension/` folder.
 3. Open the popup → **Settings**:
-   - **Dashboard URL** — where the Next.js app is deployed.
-   - **Extension token** — must match `EXTENSION_TOKEN` in the dashboard's env.
+   - **Supabase URL** — Supabase dashboard → Project Settings → API → Project URL.
+   - **Supabase anon key** — the same page, `anon` `public` key.
    - **Instagram username** — leave blank to detect it automatically.
 4. **Save settings**, then **Start**.
 
-Set `EXTENSION_TOKEN` on the server to a long random string:
+No server of your own is involved: the extension talks to Supabase directly.
 
-```
-openssl rand -hex 32
-```
+### Why the anon key is safe to put here
+
+Every table stays closed to `anon` (migration 0003), and migration 0011 grants
+EXECUTE on exactly four `SECURITY DEFINER` functions:
+
+| Function | What it does |
+|---|---|
+| `ext_claim_targets` | takes N free targets, atomically |
+| `ext_report_follow` | records one outcome |
+| `ext_begin_check` | flags "working on this now" |
+| `ext_save_cookies` | stores refreshed cookies |
+
+A stolen key can scramble the follow queue. It cannot read session cookies,
+leads or stories — verified: `SET ROLE anon; SELECT * FROM cookies` is
+`permission denied`.
+
+The claim is a function rather than a REST call for a second reason: PostgREST
+cannot express `FOR UPDATE SKIP LOCKED`, and without it two Chrome profiles
+claiming at the same moment would be handed the same target.
 
 ## What it does
 
-**Following.** Claims a batch of targets from `/api/follow-queue`, opens each
+**Following.** Claims a batch of targets via `ext_claim_targets`, opens each
 profile in a background tab, clicks Follow, closes the tab, and reports the
-outcome to `/api/follow-result`. One follow at a time, driven by an alarm, so a
+outcome via `ext_report_follow`. One follow at a time, driven by an alarm, so a
 crash or a browser restart loses at most one and never double-follows.
 
 The claim uses `FOR UPDATE SKIP LOCKED`, so several Chrome profiles running at
@@ -50,8 +66,8 @@ would waste budget on someone already covered.
 
 **Token refresh.** Every 2–12 hours (configurable), and on demand via **Update
 tokens now**, it reads this profile's Instagram cookies — including the httpOnly
-`sessionid` and `datr`, which page scripts cannot see — and pushes them to
-`/api/extension-cookies`. A refresh also re-activates a session that had been
+`sessionid` and `datr`, which page scripts cannot see — and stores them via
+`ext_save_cookies`. A refresh also re-activates a session that had been
 disabled for stale cookies, since that is precisely what the refresh fixes.
 
 ## Pacing
@@ -89,5 +105,5 @@ burn every target's retries before anyone noticed.
   are generated per build and would break on the next deploy.
 - The extension only follows the button inside the profile `<header>`, so it
   cannot accidentally follow a sidebar suggestion.
-- The token authorises claiming and reporting only, not reading leads: a leaked
-  token costs follow budget, not the pipeline.
+- The anon key authorises the four functions only, never table access: a leaked
+  key costs follow budget, not the pipeline.
