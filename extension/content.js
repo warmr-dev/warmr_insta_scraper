@@ -141,14 +141,31 @@ async function doFollow() {
   found.button.click();
 
   // Confirm the state actually changed rather than trusting the click.
-  const deadline = Date.now() + 8000;
+  //
+  // Scoped to the whole document, not the <header>. Instagram re-renders the
+  // header after a follow, and React can replace the subtree entirely - so a
+  // query rooted at the old <header> element, or run in the instant between
+  // removal and reinsertion, sees nothing and reports a successful follow as a
+  // failure. The header is still preferred when it exists; the document is the
+  // fallback rather than the only source.
+  //
+  // 15s rather than 8s because the state can lag on a slow connection, and the
+  // cost of waiting is one slow follow while the cost of giving up early is a
+  // wrong record that sends another session to follow the same account again.
+  const deadline = Date.now() + 15000;
+  let sawTransient = false;
+
   while (Date.now() < deadline) {
     await sleep(POLL_MS);
     const problem = pageProblem();
     if (problem) return { outcome: problem, detail: "after click" };
 
-    const header = document.querySelector("header") || document.body;
-    const buttons = Array.from(header.querySelectorAll('button, div[role="button"]'));
+    const scope = document.querySelector("header") || document;
+    const buttons = [
+      ...scope.querySelectorAll('button, div[role="button"]'),
+      // Belt and braces: if the header was replaced, look document-wide too.
+      ...document.querySelectorAll('header button, header div[role="button"]'),
+    ];
 
     if (buttons.some((el) => REQUESTED_LABELS.some((w) => labelHas(el, w)))) {
       return { outcome: "requested" };
@@ -156,9 +173,59 @@ async function doFollow() {
     if (buttons.some((el) => FOLLOWED_LABELS.some((w) => labelHas(el, w)))) {
       return { outcome: "following" };
     }
+    // A spinner or a still-"Follow" button means the request is in flight;
+    // remember it so the failure message can say which case this was.
+    if (buttons.some((el) => FOLLOW_LABELS.some((w) => labelHas(el, w)))) {
+      sawTransient = true;
+    }
   }
 
-  return { outcome: "failed", detail: "state did not change after click" };
+  // Last resort: ask Instagram directly rather than trusting the DOM. The click
+  // may well have worked - reporting `failed` releases the target and sends
+  // another session to follow an account we already follow.
+  const confirmed = await confirmViaApi();
+  if (confirmed) return confirmed;
+
+  return {
+    outcome: "failed",
+    detail: sawTransient
+      ? "button still read Follow after 15s"
+      : "state did not change after click",
+  };
+}
+
+/**
+ * Ask Instagram whether we now follow this profile.
+ *
+ * The DOM is the primary signal because it needs no request, but it is also the
+ * part most likely to change shape. `friendships/show` is authoritative and
+ * costs one cheap authenticated GET from inside the page, where the session is
+ * real. Returns null when it cannot answer, so the caller keeps its own verdict.
+ */
+async function confirmViaApi() {
+  try {
+    const id = (document.documentElement.innerHTML.match(
+      /"profile_id"\s*:\s*"(\d+)"/,
+    ) || document.documentElement.innerHTML.match(
+      /"user_id"\s*:\s*"(\d+)"/,
+    ))?.[1];
+    if (!id) return null;
+
+    const response = await fetch(`/api/v1/friendships/show/${id}/`, {
+      headers: { "X-IG-App-ID": "936619743392459" },
+      credentials: "include",
+    });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (data.following) return { outcome: "following", detail: "confirmed via API" };
+    if (data.outgoing_request) {
+      return { outcome: "requested", detail: "confirmed via API" };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
