@@ -29,7 +29,17 @@ One Chrome profile per Instagram account. In each profile:
    - **Supabase URL** — Supabase dashboard → Project Settings → API → Project URL.
    - **Supabase anon key** — the same page, `anon` `public` key.
    - **Instagram username** — leave blank to detect it automatically.
-4. **Save settings**, then **Start**.
+4. **Save & test** — it stores the settings and immediately proves they work by
+   pushing this profile's cookies to Supabase. A green line means connected; a
+   red one says exactly what is wrong (bad key, wrong URL, missing migration,
+   not logged into Instagram).
+5. **Start**.
+
+### If it says "not configured"
+
+Reopen Settings and check the fields are actually filled. **Save & test** now
+refuses to store a half-filled config and tells you which field is empty, so
+this should not recur.
 
 No server of your own is involved: the extension talks to Supabase directly.
 

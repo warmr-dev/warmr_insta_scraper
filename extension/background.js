@@ -403,6 +403,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "REFRESH_COOKIES") {
       sendResponse(await refreshCookies("manual"));
     } else if (message?.type === "START") {
+      // Refuse to "start" into a state that can only log an error every tick.
+      const cfg = await config();
+      if (!cfg.supabaseUrl || !cfg.anonKey) {
+        sendResponse({ ok: false, error: "Set the Supabase URL and key first" });
+        return;
+      }
       await chrome.storage.local.set({ enabled: true, blockedUntil: 0 });
       await applySchedules();
       await log("started");
@@ -418,6 +424,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const st = await state();
       const { lastCookieSync } = await chrome.storage.local.get("lastCookieSync");
       sendResponse({ cfg, st, lastCookieSync: lastCookieSync ?? null });
+    } else if (message?.type === "TEST_CONNECTION") {
+      sendResponse(await testConnection());
     } else if (message?.type === "SAVE_CONFIG") {
       await chrome.storage.local.set(message.config);
       await applySchedules();
@@ -428,6 +436,69 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
   return true;
 });
+
+/**
+ * Check the credentials against Supabase and report a usable message.
+ *
+ * Claims zero targets on purpose - `p_limit: 0` is clamped to 1 by the function,
+ * so this instead asks for the session's own name, which exercises the same
+ * auth path without consuming work from the queue.
+ */
+async function testConnection() {
+  const cfg = await config();
+  if (!cfg.supabaseUrl || !cfg.anonKey) {
+    return { ok: false, error: "URL or key is empty" };
+  }
+
+  const username = cfg.session || (await detectUsername()) || "";
+  if (!username) {
+    return {
+      ok: false,
+      error: "could not detect the Instagram account - is this profile logged in?",
+    };
+  }
+  await chrome.storage.local.set({ session: username });
+
+  try {
+    // A refresh both proves the key works and does something useful: it stores
+    // this profile's current cookies, which is half the point of the extension.
+    const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
+    const jar = {};
+    for (const cookie of all) {
+      if (COOKIE_NAMES.includes(cookie.name)) jar[cookie.name] = cookie.value;
+    }
+    if (!jar.sessionid) {
+      return { ok: false, error: "no sessionid - log into Instagram in this profile" };
+    }
+    await rpc(cfg, "ext_save_cookies", {
+      p_username: username,
+      p_sessionid: jar.sessionid,
+      p_csrftoken: jar.csrftoken ?? null,
+      p_ds_user_id: jar.ds_user_id ?? null,
+      p_ig_did: jar.ig_did ?? null,
+      p_mid: jar.mid ?? null,
+      p_datr: jar.datr ?? null,
+      p_rur: jar.rur ?? null,
+      p_user_agent: navigator.userAgent,
+    });
+    await chrome.storage.local.set({ lastCookieSync: Date.now() });
+    await log(`connection OK, cookies stored for ${username}`);
+    return { ok: true, detail: `Account: ${username}` };
+  } catch (error) {
+    const message = String(error.message ?? error);
+    await log(`connection test failed: ${message}`, "error");
+    if (message.includes("401") || message.includes("JWT")) {
+      return { ok: false, error: "key rejected (401) - check the anon key" };
+    }
+    if (message.includes("404")) {
+      return { ok: false, error: "function not found (404) - is migration 0011 applied?" };
+    }
+    if (message.includes("Failed to fetch")) {
+      return { ok: false, error: "cannot reach that URL - check the Supabase URL" };
+    }
+    return { ok: false, error: message.slice(0, 140) };
+  }
+}
 
 async function applySchedules() {
   const cfg = await config();

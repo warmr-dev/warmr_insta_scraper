@@ -36,11 +36,20 @@ function ago(ts) {
   return `${Math.round(mins / 60)}h ago`;
 }
 
+// Settings inputs are filled ONCE, on open. The old code refilled them on every
+// 4-second refresh, skipping only the focused field - so typing a URL and then
+// clicking into the key field blanked the URL, and Save stored empty strings.
+// The symptom was "not configured" immediately after saving, with no clue why.
+let fieldsPrimed = false;
+
 async function render() {
   const { cfg, st, lastCookieSync } = await send({ type: "STATUS" });
 
-  for (const key of FIELDS) {
-    if ($(key) && document.activeElement !== $(key)) $(key).value = cfg[key] ?? "";
+  if (!fieldsPrimed) {
+    for (const key of FIELDS) {
+      if ($(key)) $(key).value = cfg[key] ?? "";
+    }
+    fieldsPrimed = true;
   }
 
   const blocked = Date.now() < (st.blockedUntil ?? 0);
@@ -74,7 +83,15 @@ async function render() {
 }
 
 $("start").addEventListener("click", async () => {
-  await send({ type: "START" });
+  const result = await send({ type: "START" });
+  if (result && result.ok === false) {
+    const box = $("saveError");
+    box.className = "err";
+    box.style.display = "block";
+    box.textContent = result.error;
+    // Open Settings so the empty fields are actually visible.
+    document.querySelector("details").open = true;
+  }
   render();
 });
 
@@ -99,16 +116,45 @@ $("save").addEventListener("click", async () => {
     const raw = $(key).value.trim();
     config[key] = NUMERIC.has(key) ? Number(raw) || 0 : raw;
   }
+
+  // Refuse to store a half-filled config. Saving blanks and only finding out
+  // from a background log line is the failure this whole screen should prevent.
+  const problems = [];
+  if (!config.supabaseUrl) problems.push("Supabase URL is empty");
+  else if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(config.supabaseUrl)) {
+    problems.push("Supabase URL should look like https://xxxx.supabase.co");
+  }
+  if (!config.anonKey) problems.push("anon key is empty");
+  else if (config.anonKey.length < 40) problems.push("anon key looks too short");
+
+  if (problems.length) {
+    $("saveError").textContent = problems.join(" · ");
+    $("saveError").style.display = "block";
+    return;
+  }
+  $("saveError").style.display = "none";
   // The refresh interval is the one value with a hard range: below 2h is
   // needless churn, above 12h and a session can expire before its next sync.
   config.cookieHours = Math.min(Math.max(config.cookieHours || 6, 2), 12);
 
   await send({ type: "SAVE_CONFIG", config });
-  $("save").textContent = "Saved ✓";
-  setTimeout(() => {
-    $("save").textContent = "Save settings";
-    render();
-  }, 1200);
+
+  // Prove the credentials actually reach Supabase, rather than reporting
+  // "saved" and letting the first background tick discover the truth an hour
+  // later. A wrong key is the single most likely setup mistake.
+  $("save").textContent = "Testing…";
+  const test = await send({ type: "TEST_CONNECTION" });
+  const box = $("saveError");
+  box.style.display = "block";
+  if (test?.ok) {
+    box.className = "err ok";
+    box.textContent = `Connected. ${test.detail ?? ""}`.trim();
+  } else {
+    box.className = "err";
+    box.textContent = `Saved, but the connection failed: ${test?.error ?? "unknown"}`;
+  }
+  $("save").textContent = "Save & test";
+  render();
 });
 
 render();
