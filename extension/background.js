@@ -65,6 +65,9 @@ const ALARM_FOLLOW = "warmr-follow";
 const ALARM_COOKIES = "warmr-cookies";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Set when a short gap is waiting on a timer rather than an alarm.
+let pendingTimer = null;
 const rand = (min, max) => min + Math.random() * (max - min);
 
 async function config() {
@@ -307,8 +310,11 @@ async function followOne(cfg, target) {
 
   try {
     await waitForLoad(tab.id);
-    // Let the profile header render, and look less like an instant machine.
-    await sleep(rand(1200, 3000));
+    // Let the profile header render. Scaled to the configured pace: when the
+    // operator has asked for short gaps, a fixed 1.2-3s settle is a large part
+    // of each follow, and the content script polls for the button anyway.
+    const settleMax = Math.min(3000, Math.max(400, cfg.gapMinSec * 25));
+    await sleep(rand(Math.min(400, settleMax), settleMax));
     result = await chrome.tabs.sendMessage(tab.id, { type: "FOLLOW_CURRENT" });
   } catch (error) {
     result = { outcome: "failed", detail: String(error.message ?? error).slice(0, 200) };
@@ -457,11 +463,30 @@ async function tick() {
   return scheduleNext(delayMin);
 }
 
+/**
+ * Wait `minutes`, then tick again.
+ *
+ * Chrome clamps `chrome.alarms` to a 30-second floor, so a 10-second gap set in
+ * the popup used to be silently stretched to 36s - the setting appeared to do
+ * nothing. Short waits therefore use a timer, which is exact; long ones keep
+ * the alarm, which survives the service worker being suspended (a timer does
+ * not, and a 40-minute rest would simply never fire).
+ */
 function scheduleNext(minutes) {
-  // Chrome clamps alarms to a 30s floor; keep well above it.
-  return chrome.alarms.create(ALARM_FOLLOW, {
-    delayInMinutes: Math.max(0.6, minutes),
-  });
+  chrome.alarms.clear(ALARM_FOLLOW);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+
+  if (minutes < 0.75) {
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      tick();
+    }, Math.max(1000, minutes * 60000));
+    return;
+  }
+  chrome.alarms.create(ALARM_FOLLOW, { delayInMinutes: minutes });
 }
 
 // --- wiring ---------------------------------------------------------------
@@ -500,6 +525,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message?.type === "STOP") {
       await chrome.storage.local.set({ enabled: false });
       await chrome.alarms.clear(ALARM_FOLLOW);
+      // A short gap is waiting on a timer, not an alarm; clearing only the
+      // alarm would let one more follow fire after Stop.
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
       await log("stopped");
       sendResponse({ ok: true });
     } else if (message?.type === "CLEAR_LOG") {

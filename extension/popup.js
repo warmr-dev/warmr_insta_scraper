@@ -126,6 +126,44 @@ for (const id of ["wakeHour12", "wakeMeridiem", "sleepHour12", "sleepMeridiem"])
   document.getElementById(id).addEventListener("change", describeHours);
 }
 
+/**
+ * Pace presets.
+ *
+ * Throughput is dominated by the REST between bursts, not the gap inside one,
+ * which is the opposite of what the log suggests when two follows are two
+ * minutes apart. Estimates assume ~6s of unavoidable work per follow (open the
+ * tab, load, click, report).
+ */
+const PRESETS = {
+  safe: { gapMinSec: 45, gapMaxSec: 150, restMinMin: 25, restMaxMin: 90 },
+  moderate: { gapMinSec: 20, gapMaxSec: 45, restMinMin: 5, restMaxMin: 15 },
+  fast: { gapMinSec: 8, gapMaxSec: 20, restMinMin: 1, restMaxMin: 4 },
+};
+
+function estimateRate() {
+  const gap = (Number($("gapMinSec").value) + Number($("gapMaxSec").value)) / 2;
+  const rest = ((Number($("restMinMin").value) + Number($("restMaxMin").value)) / 2) * 60;
+  const burst = 3.5; // midpoint of the 2-5 burst
+  const perCycle = burst * (gap + 6) + rest;
+  if (!Number.isFinite(perCycle) || perCycle <= 0) return;
+  const perHour = (burst / perCycle) * 3600;
+  $("paceHint").textContent =
+    `About ${perHour.toFixed(0)} follows/hour at these settings. ` +
+    "Throughput is set mostly by the rest between bursts, not the gap inside one.";
+}
+
+for (const button of document.querySelectorAll(".preset")) {
+  button.addEventListener("click", () => {
+    const preset = PRESETS[button.dataset.preset];
+    for (const [key, value] of Object.entries(preset)) $(key).value = String(value);
+    estimateRate();
+  });
+}
+
+for (const id of ["gapMinSec", "gapMaxSec", "restMinMin", "restMaxMin"]) {
+  $(id).addEventListener("input", estimateRate);
+}
+
 // --- render ---------------------------------------------------------------
 
 async function render() {
@@ -143,6 +181,7 @@ async function render() {
     $("sleepHour12").value = String(sleep.hour12);
     $("sleepMeridiem").value = sleep.meridiem;
     describeHours();
+    estimateRate();
     fieldsPrimed = true;
   }
 

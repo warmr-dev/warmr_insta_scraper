@@ -90,6 +90,18 @@ N seconds is not a slower human — it is an obvious robot. So:
   its whole queue back. Reads are untouched, so story collection continues —
   stopping those too would cost stories for a problem that only affects writes.
 
+**Pace presets** under Settings set the gap and rest together, with a live
+estimate of follows per hour:
+
+| Preset | Gap | Rest | Roughly |
+|---|---|---|---|
+| Safe | 45-150s | 25-90 min | ~3/hour |
+| Moderate | 20-45s | 5-15 min | ~17/hour |
+| Fast | 8-20s | 1-4 min | ~57/hour |
+
+Throughput is set mostly by the REST between bursts, not the gap inside one -
+which is not what the log suggests when two follows are two minutes apart.
+
 `Daily limit = 0` means no cap; the rhythm still paces it. Start low on accounts
 that are already being rate-limited, and raise it once you see it holding.
 
