@@ -66,7 +66,12 @@
         border: 1px solid #334155; border-radius: 6px;
         color: #e2e8f0; font-size: 13px;
       }
-      input:focus { outline: 0; border-color: #0284c7; background: #223049; }
+      input:focus, select:focus { outline: 0; border-color: #0284c7; background: #223049; }
+      select {
+        width: 100%; padding: 10px 11px; background: #1e293b;
+        border: 1px solid #334155; border-radius: 6px;
+        color: #e2e8f0; font-size: 13px; cursor: pointer;
+      }
       .row { display: flex; gap: 10px; }
       .row > div { flex: 1; }
       .hint { color: #64748b; font-size: 11px; margin-top: 5px; line-height: 1.45; }
@@ -178,16 +183,31 @@
         </div>
       </div>
 
+      <label>Active hours</label>
       <div class="row">
         <div>
-          <label>Wake hour</label>
-          <input id="wakeHour" type="number" min="0" max="23" />
+          <div class="hint" style="margin:0 0 4px">Start following at</div>
+          <div class="row">
+            <select id="wakeHour12"></select>
+            <select id="wakeMeridiem">
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
+          </div>
         </div>
         <div>
-          <label>Sleep hour</label>
-          <input id="sleepHour" type="number" min="1" max="24" />
+          <div class="hint" style="margin:0 0 4px">Stop following at</div>
+          <div class="row">
+            <select id="sleepHour12"></select>
+            <select id="sleepMeridiem">
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
+          </div>
         </div>
       </div>
+      <div id="hoursSummary" class="hint"></div>
+
       <div class="hint">
         Follows come in bursts of 2-5 with a long rest between them, and every
         gap is jittered - a fixed cadence is what gets an account flagged.

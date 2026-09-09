@@ -40,9 +40,15 @@ const DEFAULTS = {
   burstMax: 5,
   restMinMin: 25,
   restMaxMin: 90,
-  // Local hours the account is "awake". Following at 4am every night is a tell.
+  // Local hours the account is "awake", in 24-hour form; the popup shows them
+  // as AM/PM. Following at 4am every night is a tell.
+  //
+  // 0 rather than 24 for midnight: both behave identically in `awake()` (the
+  // wrap branch handles start > end), but 24 cannot survive a round trip
+  // through a 12-hour picker, so storing it would make the form change the
+  // value just by being opened and saved.
   wakeHour: 8,
-  sleepHour: 24,
+  sleepHour: 0,
 };
 
 const COOKIE_NAMES = [
@@ -320,9 +326,15 @@ async function tick() {
     // all start following at 08:00:00 exactly.
     const minutes = minutesUntilWaking(cfg) + rand(0, 40);
     const at = new Date(Date.now() + minutes * 60000);
+    const hour12 = (h) => {
+      const n = ((Number(h) % 24) + 24) % 24;
+      return `${n % 12 === 0 ? 12 : n % 12} ${n < 12 ? "AM" : "PM"}`;
+    };
     await log(
-      `asleep until ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` +
-        ` (waking hours are ${cfg.wakeHour}:00-${cfg.sleepHour % 24}:00) - ` +
+      `asleep until ${at.toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      })} (active hours are ${hour12(cfg.wakeHour)} to ${hour12(cfg.sleepHour)}) - ` +
         "change them under Settings to follow now",
     );
     return scheduleNext(minutes);
@@ -445,9 +457,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         ok: true,
         asleep,
         detail: asleep
-          ? `Started, but it is outside waking hours (${cfg.wakeHour}:00-${
-              cfg.sleepHour % 24
-            }:00). Nothing will run until then - widen the window in Settings to follow now.`
+          ? `Started, but it is outside the active hours you set. Nothing will ` +
+            `run until then - change them under Settings to follow now.`
           : null,
       });
     } else if (message?.type === "STOP") {

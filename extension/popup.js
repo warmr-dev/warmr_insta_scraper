@@ -10,9 +10,12 @@ const FIELDS = [
   "gapMaxSec",
   "restMinMin",
   "restMaxMin",
-  "wakeHour",
-  "sleepHour",
 ];
+
+// Stored as 24-hour numbers because the scheduling logic works in them, but
+// shown as 12-hour + AM/PM: "Sleep hour 24" was a genuinely confusing way to
+// say midnight.
+const HOUR_FIELDS = ["wakeHour", "sleepHour"];
 
 const NUMERIC = new Set([
   "cookieHours",
@@ -21,8 +24,6 @@ const NUMERIC = new Set([
   "gapMaxSec",
   "restMinMin",
   "restMaxMin",
-  "wakeHour",
-  "sleepHour",
 ]);
 
 const $ = (id) => document.getElementById(id);
@@ -41,6 +42,53 @@ let fieldsPrimed = false;
 function message(el, text, kind) {
   el.className = `msg ${kind}`;
   el.textContent = text;
+}
+
+/** 24-hour value -> {hour12, meridiem}. Midnight is 12 AM, noon is 12 PM. */
+function to12(hour24) {
+  const h = ((Number(hour24) % 24) + 24) % 24;
+  const meridiem = h < 12 ? "AM" : "PM";
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return { hour12, meridiem };
+}
+
+/** {hour12, meridiem} -> 24-hour value. */
+function to24(hour12, meridiem) {
+  const h = Number(hour12) % 12;
+  return meridiem === "PM" ? h + 12 : h;
+}
+
+/** Fill the 1-12 options once. */
+function primeHourSelects() {
+  for (const id of ["wakeHour12", "sleepHour12"]) {
+    const select = $(id);
+    if (select.options.length) continue;
+    for (let h = 1; h <= 12; h += 1) {
+      const option = document.createElement("option");
+      option.value = String(h);
+      option.textContent = String(h);
+      select.appendChild(option);
+    }
+  }
+}
+
+/** Say the window back in plain words, so a wrong setting is obvious. */
+function describeHours() {
+  const wake = to24($("wakeHour12").value, $("wakeMeridiem").value);
+  const sleep = to24($("sleepHour12").value, $("sleepMeridiem").value);
+  const label = (h) => {
+    const { hour12, meridiem } = to12(h);
+    return `${hour12}:00 ${meridiem}`;
+  };
+  const summary = $("hoursSummary");
+  if (wake === sleep) {
+    summary.textContent = "Follows around the clock - no quiet hours.";
+    return;
+  }
+  const overnight = wake > sleep;
+  summary.textContent =
+    `Follows between ${label(wake)} and ${label(sleep)}` +
+    (overnight ? " (overnight, across midnight)." : ", and rests outside that.");
 }
 
 /** Mirrors `awake()` in background.js, including the wrap past midnight. */
@@ -74,15 +122,27 @@ for (const button of document.querySelectorAll("nav button")) {
   });
 }
 
+for (const id of ["wakeHour12", "wakeMeridiem", "sleepHour12", "sleepMeridiem"]) {
+  document.getElementById(id).addEventListener("change", describeHours);
+}
+
 // --- render ---------------------------------------------------------------
 
 async function render() {
   const { cfg, st, lastCookieSync } = await send({ type: "STATUS" });
 
   if (!fieldsPrimed) {
+    primeHourSelects();
     for (const key of FIELDS) {
       if ($(key)) $(key).value = cfg[key] ?? "";
     }
+    const wake = to12(cfg.wakeHour);
+    $("wakeHour12").value = String(wake.hour12);
+    $("wakeMeridiem").value = wake.meridiem;
+    const sleep = to12(cfg.sleepHour);
+    $("sleepHour12").value = String(sleep.hour12);
+    $("sleepMeridiem").value = sleep.meridiem;
+    describeHours();
     fieldsPrimed = true;
   }
 
@@ -95,7 +155,8 @@ async function render() {
   } else if (cfg.enabled && !withinHours(cfg)) {
     // "running" while nothing can run is the reading that sent someone to the
     // logs to find out why. Say it on the status line instead.
-    status.textContent = `asleep until ${cfg.wakeHour}:00`;
+    const wake = to12(cfg.wakeHour);
+    status.textContent = `asleep until ${wake.hour12} ${wake.meridiem}`;
     status.className = "warn";
   } else if (cfg.enabled) {
     status.textContent = "running";
@@ -172,6 +233,8 @@ $("save").addEventListener("click", async () => {
     const raw = $(key).value.trim();
     config[key] = NUMERIC.has(key) ? Number(raw) || 0 : raw;
   }
+  config.wakeHour = to24($("wakeHour12").value, $("wakeMeridiem").value);
+  config.sleepHour = to24($("sleepHour12").value, $("sleepMeridiem").value);
 
   // Refuse a half-filled config rather than storing blanks and letting the
   // background discover it a tick later.
