@@ -205,6 +205,10 @@ async function render() {
     status.className = "off";
   }
 
+  const toggle = $("toggle");
+  toggle.textContent = cfg.enabled ? "Stop" : "Start";
+  toggle.className = `act ${cfg.enabled ? "stop" : "primary"}`;
+
   $("account").textContent = cfg.session || "—";
   $("today").textContent = cfg.dailyLimit
     ? `${st.doneToday} / ${cfg.dailyLimit}`
@@ -226,21 +230,33 @@ async function render() {
 
 // --- actions --------------------------------------------------------------
 
-$("start").addEventListener("click", async () => {
-  const result = await send({ type: "START" });
-  if (result && result.ok === false) {
-    message($("statusMsg"), result.error, "bad");
-  } else if (result?.asleep) {
-    message($("statusMsg"), result.detail, "bad");
-  } else {
-    message($("statusMsg"), "Running. Watch the Logs tab.", "good");
-  }
-  render();
-});
+/**
+ * One button, because Start and Stop are one decision.
+ *
+ * Two buttons meant the running state had to be read off the status line to
+ * know which one to press, and Start while already running was a legal click
+ * that started a second chain.
+ */
+$("toggle").addEventListener("click", async () => {
+  const button = $("toggle");
+  button.disabled = true;
 
-$("stop").addEventListener("click", async () => {
-  await send({ type: "STOP" });
-  message($("statusMsg"), "Stopped.", "good");
+  const { cfg } = await send({ type: "STATUS" });
+  if (cfg.enabled) {
+    await send({ type: "STOP" });
+    message($("statusMsg"), "Stopped.", "good");
+  } else {
+    const result = await send({ type: "START" });
+    if (result && result.ok === false) {
+      message($("statusMsg"), result.error, "bad");
+    } else if (result?.asleep) {
+      message($("statusMsg"), result.detail, "bad");
+    } else {
+      message($("statusMsg"), "Running. Watch the Logs tab.", "good");
+    }
+  }
+
+  button.disabled = false;
   render();
 });
 

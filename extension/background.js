@@ -423,8 +423,6 @@ async function tick() {
   const target = queue[0];
   const result = await followOne(cfg, target);
 
-  await chrome.storage.local.set({ queue: queue.slice(1) });
-
   if (result.outcome === "following" || result.outcome === "requested") {
     doneToday += 1;
     await chrome.storage.local.set({ doneToday, day: today() });
@@ -472,6 +470,39 @@ async function tick() {
  * the alarm, which survives the service worker being suspended (a timer does
  * not, and a 40-minute rest would simply never fire).
  */
+/**
+ * Run one tick, and guarantee the next one is scheduled.
+ *
+ * `tick` schedules the next run at the end of each of its paths, so anything
+ * that threw before reaching one killed the loop silently and the operator had
+ * to press Start again - which is exactly what a failed follow did, because the
+ * reporting call is the most likely thing in there to throw.
+ *
+ * `running` makes the loop single-flight. Pressing Start while a tick or a
+ * pending timer was in flight used to run two chains at once, which is how the
+ * same target got followed twice a second apart.
+ */
+let running = false;
+
+async function safeTick(reason) {
+  if (running) {
+    await log(`tick skipped - one already in flight (${reason})`, "warn");
+    return;
+  }
+  running = true;
+  try {
+    await tick();
+  } catch (error) {
+    await log(`tick failed: ${String(error.message ?? error).slice(0, 160)}`, "error");
+    // The loop must outlive any single failure, so re-arm before giving up on
+    // this one.
+    const cfg = await config();
+    if (cfg.enabled) scheduleNext(rand(1, 3));
+  } finally {
+    running = false;
+  }
+}
+
 function scheduleNext(minutes) {
   chrome.alarms.clear(ALARM_FOLLOW);
   if (pendingTimer) {
@@ -482,7 +513,7 @@ function scheduleNext(minutes) {
   if (minutes < 0.75) {
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      tick();
+      safeTick("timer");
     }, Math.max(1000, minutes * 60000));
     return;
   }
@@ -492,7 +523,7 @@ function scheduleNext(minutes) {
 // --- wiring ---------------------------------------------------------------
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === ALARM_FOLLOW) await tick();
+  if (alarm.name === ALARM_FOLLOW) await safeTick("alarm");
   if (alarm.name === ALARM_COOKIES) await refreshCookies("scheduled");
 });
 
@@ -513,7 +544,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       // Say up front if nothing will happen tonight, rather than letting the
       // Status tab read "running" while the log quietly says otherwise.
       const asleep = !awake(cfg);
-      await tick();
+      await safeTick("start");
       sendResponse({
         ok: true,
         asleep,
@@ -641,5 +672,5 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await applySchedules();
   const cfg = await config();
-  if (cfg.enabled) await tick();
+  if (cfg.enabled) await safeTick("startup");
 });
