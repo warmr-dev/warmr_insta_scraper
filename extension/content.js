@@ -18,9 +18,16 @@
 const BUTTON_TIMEOUT_MS = 12000;
 const POLL_MS = 250;
 
-// Exact button labels, lowercased. Order matters only for readability.
+// Button labels, lowercased.
+//
+// Matching is by WORD, not by whole string: Instagram nests an icon inside the
+// button, and its accessibility text is part of innerText. The followed-state
+// button reads "Following Down chevron icon", so an exact === "following" test
+// reported a successful follow as a failure - which is exactly what happened,
+// and why this is now `labelHas` rather than an equality check.
 const FOLLOW_LABELS = ["follow", "follow back"];
-const ALREADY_LABELS = ["following", "requested", "message"];
+const FOLLOWED_LABELS = ["following"];
+const REQUESTED_LABELS = ["requested"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,6 +43,18 @@ function labelOf(el) {
 }
 
 /**
+ * True when the button's text starts with `word`.
+ *
+ * Anchored to the start so "Following" matches but "Follow" inside some longer
+ * sentence elsewhere on the page does not, and so the trailing icon text an
+ * exact match chokes on is simply ignored.
+ */
+function labelHas(el, word) {
+  const label = labelOf(el);
+  return label === word || label.startsWith(`${word} `);
+}
+
+/**
  * The profile's own Follow button.
  *
  * A profile page also contains Follow buttons for suggested accounts in the
@@ -45,7 +64,10 @@ function labelOf(el) {
  */
 function findFollowButton() {
   const candidates = clickables().filter((el) =>
-    FOLLOW_LABELS.includes(labelOf(el)),
+    // "Following ..." must never count as "Follow": startsWith on the bare word
+    // would match it, so the followed state is excluded first.
+    FOLLOW_LABELS.some((w) => labelHas(el, w)) &&
+    !FOLLOWED_LABELS.some((w) => labelHas(el, w)),
   );
   if (candidates.length === 0) return null;
 
@@ -61,13 +83,15 @@ function findFollowButton() {
   return sorted[0].top < 600 ? sorted[0].el : null;
 }
 
-/** True when the page already shows a following/requested state. */
+/** True when the header already shows a following/requested state. */
 function alreadyFollowing() {
   const header = document.querySelector("header");
   const scope = header || document.body;
-  return Array.from(
-    scope.querySelectorAll('button, div[role="button"]'),
-  ).some((el) => ALREADY_LABELS.includes(labelOf(el)) && labelOf(el) !== "message");
+  return Array.from(scope.querySelectorAll('button, div[role="button"]')).some(
+    (el) =>
+      FOLLOWED_LABELS.some((w) => labelHas(el, w)) ||
+      REQUESTED_LABELS.some((w) => labelHas(el, w)),
+  );
 }
 
 /** Page-level signals that the account cannot be followed at all. */
@@ -124,12 +148,14 @@ async function doFollow() {
     if (problem) return { outcome: problem, detail: "after click" };
 
     const header = document.querySelector("header") || document.body;
-    const labels = Array.from(
-      header.querySelectorAll('button, div[role="button"]'),
-    ).map(labelOf);
+    const buttons = Array.from(header.querySelectorAll('button, div[role="button"]'));
 
-    if (labels.includes("requested")) return { outcome: "requested" };
-    if (labels.includes("following")) return { outcome: "following" };
+    if (buttons.some((el) => REQUESTED_LABELS.some((w) => labelHas(el, w)))) {
+      return { outcome: "requested" };
+    }
+    if (buttons.some((el) => FOLLOWED_LABELS.some((w) => labelHas(el, w)))) {
+      return { outcome: "following" };
+    }
   }
 
   return { outcome: "failed", detail: "state did not change after click" };

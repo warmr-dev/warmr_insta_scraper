@@ -65,3 +65,5 @@ estimation/*.csv
 # viewer's own account data - never commit one.
 Instagram.html
 *.instagram.html
+Instagram*.html
+Instagram*_files/
