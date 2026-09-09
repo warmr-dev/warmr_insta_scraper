@@ -76,6 +76,14 @@ def follower() -> None:
     Follower().run()
 
 
+@cli.command("session-follower")
+def session_follower() -> None:
+    """Follow targets from live cookie sessions, at a human rhythm."""
+    from .workers.session_follower import SessionFollower
+
+    SessionFollower().run()
+
+
 @cli.command()
 def warden() -> None:
     """Account health, alerts, recovery orchestration (SPEC 7.8)."""
@@ -90,12 +98,82 @@ def warden() -> None:
 @cli.command("import-targets")
 @click.argument("csv_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Parse and report without writing")
-def import_targets(csv_path: str, dry_run: bool) -> None:
-    """Import the target CSV, normalise ids, assign shards (SPEC Phase 1)."""
+@click.option(
+    "--no-follow-queue",
+    is_flag=True,
+    help="Import targets only; do not queue them to be followed",
+)
+def import_targets(csv_path: str, dry_run: bool, no_follow_queue: bool) -> None:
+    """Import targets from a CSV or Excel file and queue them to be followed."""
     from .importer import import_csv
 
-    report = import_csv(csv_path, dry_run=dry_run)
+    report = import_csv(csv_path, dry_run=dry_run, enqueue_for_follow=not no_follow_queue)
     click.echo(report.render())
+
+
+@cli.command("follow-status")
+def follow_status_cmd() -> None:
+    """Follow-pool progress, and who owns what."""
+    from sqlalchemy import func, select
+
+    from .db.models import SessionFollow
+    from .db.session import session_scope
+    from .follow_assign import stats
+
+    snapshot = stats()
+    if snapshot.total == 0:
+        click.echo("The follow pool is empty. Run `import-targets` first.")
+        return
+
+    pct = 100.0 * snapshot.done / snapshot.total
+    click.echo("Follow pool")
+    click.echo(f"  targets total : {snapshot.total}")
+    click.echo(f"  followed      : {snapshot.following}")
+    click.echo(f"  requested     : {snapshot.requested}  (private, awaiting approval)")
+    click.echo(f"  free          : {snapshot.free}")
+    click.echo(f"  claimed       : {snapshot.claimed}")
+    click.echo(f"  failed        : {snapshot.failed}")
+    click.echo(f"  unavailable   : {snapshot.unavailable}")
+    click.echo(f"  progress      : {pct:.1f}%")
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(SessionFollow.session_username, func.count())
+            .where(SessionFollow.session_username.is_not(None))
+            .group_by(SessionFollow.session_username)
+            .order_by(func.count().desc())
+        ).all()
+    if rows:
+        click.echo("\nPer session")
+        for username, count in rows:
+            click.echo(f"  {username:<28} {count}")
+
+
+@cli.command("follow-reclaim")
+@click.option("--session", "session_username", help="Free one session's targets by name")
+@click.option(
+    "--all-dead",
+    is_flag=True,
+    help="Free the targets of every session no longer active",
+)
+def follow_reclaim_cmd(session_username: str | None, all_dead: bool) -> None:
+    """Hand a dead session's targets back to the pool.
+
+    This is what makes a dead account's 256 follows available to the survivors.
+    The follower does it automatically every cycle; this is the manual lever.
+    """
+    from .follow_assign import reap_session, reclaim_dead_sessions, reclaim_stale_claims
+
+    if not session_username and not all_dead:
+        raise click.ClickException("Pass --session <username> or --all-dead")
+
+    if session_username:
+        freed = reap_session(session_username, reason="manual reclaim")
+        click.echo(f"Freed {freed} targets held by {session_username}.")
+    if all_dead:
+        freed = reclaim_dead_sessions()
+        stale = reclaim_stale_claims()
+        click.echo(f"Freed {freed} targets from inactive sessions, {stale} stale claims.")
 
 
 @cli.command("seed-worker")

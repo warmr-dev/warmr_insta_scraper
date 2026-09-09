@@ -16,6 +16,7 @@ import math
 import re
 import sys
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,11 @@ DEFAULT_BATCH_SIZE = 1000
 _USER_ID_KEYS = ("userid", "pk", "id", "instagramid", "igid", "profileid")
 _USERNAME_KEYS = ("username", "user", "handle", "login", "screenname", "account")
 _URL_KEYS = ("instagramurl", "url", "link", "profileurl", "instagramlink", "profile")
+_FULL_NAME_KEYS = ("fullname", "name", "displayname", "title")
+_PRIVATE_KEYS = ("isprivate", "private")
+# The export's own `followed_by` names the account a target was SCRAPED FROM,
+# not one of our sessions. It is provenance, so it lands in `source_account`.
+_SOURCE_KEYS = ("followedby", "sourceaccount", "scrapedfrom", "source")
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _URL_USERNAME_RE = re.compile(
@@ -62,6 +68,19 @@ _RESERVED_USERNAMES = {
 }
 
 
+def _clean_text(raw: Any) -> str | None:
+    """Trim a free-text cell, treating blanks and Excel's None as absent."""
+    value = str(raw).strip() if raw is not None else ""
+    return value[:200] or None
+
+
+def _parse_bool(raw: Any) -> bool:
+    """Spreadsheet truthiness. openpyxl yields real bools; CSV yields 'TRUE'."""
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes", "y", "t")
+
+
 def _norm_header(raw: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (raw or "").strip().lower())
 
@@ -74,6 +93,11 @@ class ImportRow:
     username: str
     instagram_url: str | None
     needs_resolution: bool = False
+    # Extra columns the real export carries. Optional: a minimal two-column CSV
+    # still imports, these just stay empty.
+    full_name: str | None = None
+    is_private: bool = False
+    source_account: str | None = None
 
 
 @dataclass(slots=True)
@@ -89,6 +113,7 @@ class ImportReport:
     skip_reasons: Counter[str] = field(default_factory=Counter)
     inserted: int = 0
     updated: int = 0
+    enqueued: int = 0
     shard_count: int = 0
     per_shard: Counter[int] = field(default_factory=Counter)
 
@@ -107,6 +132,7 @@ class ImportReport:
         lines += [
             f"  inserted              : {self.inserted}",
             f"  updated               : {self.updated}",
+            f"  queued to follow      : {self.enqueued}",
             f"  shards                : {self.shard_count}",
         ]
         for shard in sorted(self.per_shard):
@@ -126,6 +152,9 @@ def _detect_columns(fieldnames: list[str]) -> dict[str, str]:
         ("user_id", _USER_ID_KEYS),
         ("username", _USERNAME_KEYS),
         ("instagram_url", _URL_KEYS),
+        ("full_name", _FULL_NAME_KEYS),
+        ("is_private", _PRIVATE_KEYS),
+        ("source_account", _SOURCE_KEYS),
     ):
         for key in keys:
             if key in normalised:
@@ -183,8 +212,67 @@ def _normalise_url(raw: str | None, username: str | None) -> str | None:
     return None
 
 
+def read_rows(path: Path) -> tuple[list[str], Iterator[dict[str, Any]]]:
+    """Header and row dicts from a CSV or Excel file.
+
+    Split out so `.xlsx` gets the exact same column detection, username
+    normalisation and de-duplication as `.csv` - the alternative was a second
+    parser that would drift from this one.
+    """
+    suffix = path.suffix.lower()
+    if suffix in (".xlsx", ".xlsm"):
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:  # pragma: no cover - depends on the install
+            raise click.ClickException(
+                f"{path} is an Excel file but openpyxl is not installed. "
+                "Either `pip install openpyxl` or export the sheet as CSV."
+            ) from exc
+
+        # read_only + values_only: these sheets are tens of thousands of rows and
+        # the cell objects are not needed, only the text.
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook.active
+        rows_iter = sheet.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration as exc:
+            raise click.ClickException(f"{path} is empty") from exc
+        header = [str(c).strip() if c is not None else "" for c in header_row]
+
+        def _iter() -> Iterator[dict[str, Any]]:
+            for values in rows_iter:
+                # Excel pads short rows with None; zip on the header length.
+                # strict=False on purpose: Excel returns short rows for trailing
+                # empty cells, and a strict zip would raise on the last row of
+                # a perfectly ordinary sheet.
+                yield {
+                    key: ("" if value is None else str(value))
+                    for key, value in zip(header, values, strict=False)
+                    if key
+                }
+            workbook.close()
+
+        return header, _iter()
+
+    handle = path.open("r", encoding="utf-8-sig", newline="")
+    reader = csv.DictReader(handle)
+    if not reader.fieldnames:
+        handle.close()
+        raise click.ClickException(f"{path} has no header row")
+    header = list(reader.fieldnames)
+
+    def _iter_csv() -> Iterator[dict[str, Any]]:
+        try:
+            yield from reader
+        finally:
+            handle.close()
+
+    return header, _iter_csv()
+
+
 def parse_csv(path: Path, report: ImportReport) -> list[ImportRow]:
-    """Read and normalise the CSV. No network calls, no DB access.
+    """Read and normalise a CSV or Excel file. No network calls, no DB access.
 
     Duplicates are dropped by user_id, and by username for rows with no user_id.
     """
@@ -192,66 +280,74 @@ def parse_csv(path: Path, report: ImportReport) -> list[ImportRow]:
     seen_ids: set[int] = set()
     seen_usernames: set[str] = set()
 
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames:
-            raise click.ClickException(f"{path} has no header row")
+    fieldnames, row_iter = read_rows(path)
+    columns = _detect_columns(fieldnames)
+    if not columns:
+        raise click.ClickException(
+            f"{path}: could not find a user_id/username/url column among "
+            f"{fieldnames}"
+        )
+    log.info("importer.columns_detected", **columns)
 
-        columns = _detect_columns(list(reader.fieldnames))
-        if not columns:
-            raise click.ClickException(
-                f"{path}: could not find a user_id/username/url column among "
-                f"{reader.fieldnames}"
-            )
-        log.info("importer.columns_detected", **columns)
+    for raw_row in row_iter:
+        report.rows_read += 1
 
-        for raw_row in reader:
-            report.rows_read += 1
+        user_id = _parse_user_id(
+            raw_row.get(columns["user_id"]) if "user_id" in columns else None
+        )
+        raw_url = raw_row.get(columns["instagram_url"]) if "instagram_url" in columns else None
+        username = _normalise_username(
+            raw_row.get(columns["username"]) if "username" in columns else None,
+            raw_url,
+        )
+        url = _normalise_url(raw_url, username)
+        extra = {
+            "full_name": _clean_text(
+                raw_row.get(columns["full_name"]) if "full_name" in columns else None
+            ),
+            "is_private": _parse_bool(
+                raw_row.get(columns["is_private"]) if "is_private" in columns else None
+            ),
+            "source_account": _clean_text(
+                raw_row.get(columns["source_account"]) if "source_account" in columns else None
+            ),
+        }
 
-            user_id = _parse_user_id(
-                raw_row.get(columns["user_id"]) if "user_id" in columns else None
-            )
-            raw_url = raw_row.get(columns["instagram_url"]) if "instagram_url" in columns else None
-            username = _normalise_username(
-                raw_row.get(columns["username"]) if "username" in columns else None,
-                raw_url,
-            )
-            url = _normalise_url(raw_url, username)
+        if user_id is None and username is None:
+            report.skipped += 1
+            report.skip_reasons["no usable user_id, username or url"] += 1
+            continue
 
-            if user_id is None and username is None:
-                report.skipped += 1
-                report.skip_reasons["no usable user_id, username or url"] += 1
+        if user_id is not None:
+            if user_id in seen_ids:
+                report.duplicates_dropped += 1
                 continue
-
-            if user_id is not None:
-                if user_id in seen_ids:
-                    report.duplicates_dropped += 1
-                    continue
-                seen_ids.add(user_id)
-                if username is None:
-                    # We have the pk; a placeholder username is fine, the poller
-                    # keys on user_id and a later pass can backfill the handle.
-                    username = f"id_{user_id}"
-                else:
-                    seen_usernames.add(username)
-                rows.append(
-                    ImportRow(user_id=user_id, username=username, instagram_url=url)
-                )
+            seen_ids.add(user_id)
+            if username is None:
+                # We have the pk; a placeholder username is fine, the poller
+                # keys on user_id and a later pass can backfill the handle.
+                username = f"id_{user_id}"
             else:
-                assert username is not None
-                if username in seen_usernames:
-                    report.duplicates_dropped += 1
-                    continue
                 seen_usernames.add(username)
-                report.needs_resolution += 1
-                rows.append(
-                    ImportRow(
-                        user_id=None,
-                        username=username,
-                        instagram_url=url,
-                        needs_resolution=True,
-                    )
+            rows.append(
+                ImportRow(user_id=user_id, username=username, instagram_url=url, **extra)
+            )
+        else:
+            assert username is not None
+            if username in seen_usernames:
+                report.duplicates_dropped += 1
+                continue
+            seen_usernames.add(username)
+            report.needs_resolution += 1
+            rows.append(
+                ImportRow(
+                    user_id=None,
+                    username=username,
+                    instagram_url=url,
+                    needs_resolution=True,
+                    **extra,
                 )
+            )
 
     report.valid = len(rows)
     return rows
@@ -332,8 +428,13 @@ def import_csv(
     batch_size: int = DEFAULT_BATCH_SIZE,
     dry_run: bool = False,
     shard_count: int | None = None,
+    enqueue_for_follow: bool = True,
 ) -> ImportReport:
-    """Parse `path` and upsert into `targets`. Returns the count report."""
+    """Parse `path` and upsert into `targets`. Returns the count report.
+
+    `enqueue_for_follow` also seeds `session_follows`, so one import both
+    registers the accounts to monitor and queues them to be followed.
+    """
     csv_path = Path(path).expanduser()
     if not csv_path.is_file():
         raise click.ClickException(f"CSV not found: {csv_path}")
@@ -389,10 +490,30 @@ def import_csv(
         )
         report.inserted = len(rows) - report.updated
 
+    if enqueue_for_follow:
+        # The same rows also become the follow pool: unowned, free for any live
+        # session to claim. Idempotent, so re-importing a CSV never resets a
+        # target that is already followed.
+        from .follow_assign import enqueue_targets
+
+        payload = [
+            {
+                "target_user_id": r.user_id,
+                "username": r.username,
+                "full_name": r.full_name,
+                "is_private": r.is_private,
+                "source_account": r.source_account,
+            }
+            for r in rows
+            if r.user_id is not None
+        ]
+        report.enqueued = enqueue_targets(payload)
+
     log.info(
         "importer.done",
         inserted=report.inserted,
         updated=report.updated,
+        enqueued=report.enqueued,
         shards=report.shard_count,
     )
     return report

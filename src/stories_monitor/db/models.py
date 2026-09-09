@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -246,6 +247,81 @@ class Cookie(Base):
         return {n: v for n in names if (v := getattr(self, n))}
 
 
+class SessionFollow(Base):
+    """A target owned by a cookie session, or free for any session to claim.
+
+    Distinct from `TargetFollow`, which belongs to the password-login
+    `worker_accounts` world. This table is keyed to `cookies.username`, which is
+    the fleet that actually runs.
+
+    `session_username` is NULLABLE on purpose: NULL means unowned. A session
+    dying does not delete its rows, it releases them, and the next live session
+    picks them up. That single nullable column is the whole uninterrupted-
+    operation story - see `follow_assign.release_session`.
+    """
+
+    __tablename__ = "session_follows"
+
+    target_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    full_name: Mapped[str | None] = mapped_column(Text)
+    session_username: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("cookies.username", ondelete="SET NULL")
+    )
+    # The session that actually holds the follow. Mirrors `session_username`
+    # once the follow lands, and is what the dashboard reads - kept separate so
+    # a claim in progress does not yet read as "followed by".
+    followed_by: Mapped[str | None] = mapped_column(Text)
+    # True only while a session is mid-action on this target, so the dashboard
+    # can show what each session is touching right now.
+    is_checking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # Where this target came from in the import file - the account it was
+    # scraped from. NOT one of our sessions; see migration 0009.
+    source_account: Mapped[str | None] = mapped_column(Text)
+    # Private targets yield a pending request, not a follow, so they are
+    # claimed only after the public ones.
+    is_private: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # free | claimed | following | requested | failed | unavailable
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="free")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claimed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    followed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # Who made the last attempt. Survives the row being released, so a session
+    # that dies can have ITS failures forgiven without also forgiving failures
+    # recorded by healthy sessions - those mean the target really is gone.
+    last_attempt_by: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    imported_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_session_follows_free",
+            "is_private",
+            "attempts",
+            "target_user_id",
+            postgresql_where=text("session_username IS NULL AND state = 'free'"),
+        ),
+        Index("ix_session_follows_owner", "session_username", "state"),
+        # One session per target, enforced by the database - not merely by the
+        # claim query being written correctly.
+        Index(
+            "uq_session_follows_one_owner",
+            "target_user_id",
+            unique=True,
+            postgresql_where=text("session_username IS NOT NULL"),
+        ),
+        Index(
+            "ix_session_follows_checking",
+            "followed_by",
+            "is_checking",
+            postgresql_where=text("is_checking"),
+        ),
+    )
+
+
 class MetricSample(Base):
     """Simple stats table backing the /metrics endpoint (SPEC section 10)."""
 
@@ -280,6 +356,11 @@ class ActivityLog(Base):
     targets: Mapped[list[str] | None] = mapped_column(JSONB)
     item_count: Mapped[int | None] = mapped_column(Integer)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    # The ONE target this row is about, when it is about one. `targets` above
+    # stays the list for tray-shaped actions covering many accounts at once;
+    # these two answer "which session looked at which account".
+    target_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    target_username: Mapped[str | None] = mapped_column(Text)
     occurred_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -287,4 +368,10 @@ class ActivityLog(Base):
     __table_args__ = (
         Index("ix_activity_log_recent", "occurred_at"),
         Index("ix_activity_log_account", "username", "occurred_at"),
+        Index(
+            "ix_activity_log_target",
+            "target_username",
+            "occurred_at",
+            postgresql_where=text("target_username IS NOT NULL"),
+        ),
     )
