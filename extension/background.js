@@ -14,11 +14,18 @@
  */
 
 const DEFAULTS = {
-  // Supabase project URL, e.g. https://abcdefgh.supabase.co
-  supabaseUrl: "",
-  // The project's anon key. Safe to hold here: RLS keeps every table closed to
-  // it, and the only things it can do are the four ext_* functions.
-  anonKey: "",
+  // Pre-filled for this project so a fresh profile works without typing.
+  // Overridable in the popup if the project ever moves.
+  supabaseUrl: "https://fdfwockxvtjtbermusfq.supabase.co",
+  // The project's anon key. Safe to ship here: RLS keeps every table closed to
+  // it (verified - `SELECT * FROM cookies` is permission denied), and the only
+  // things it can do are the four ext_* functions. A leaked key costs a
+  // scrambled follow queue, not the sessions or the leads.
+  anonKey:
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkZndvY2t4dnRqdGJlcm11c2ZxIiwicm9sZSI6" +
+    "ImFub24iLCJpYXQiOjE3ODY0NTcyODgsImV4cCI6MjEwMjAzMzI4OH0." +
+    "QHBui55xfioxuxI-x0eu1-HEvdazmHNE3yeNWidGXG0",
   session: "",
   enabled: false,
   // How many follows per day. 0 means unlimited - the rhythm still paces it.
@@ -418,6 +425,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       await chrome.storage.local.set({ enabled: false });
       await chrome.alarms.clear(ALARM_FOLLOW);
       await log("stopped");
+      sendResponse({ ok: true });
+    } else if (message?.type === "CLEAR_LOG") {
+      await chrome.storage.local.set({ lastLog: [] });
       sendResponse({ ok: true });
     } else if (message?.type === "STATUS") {
       const cfg = await config();

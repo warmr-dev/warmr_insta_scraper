@@ -1,4 +1,4 @@
-/** Popup UI: status, the two buttons that matter, and the settings form. */
+/** Popup UI: status, logs, and settings. */
 
 const FIELDS = [
   "supabaseUrl",
@@ -28,6 +28,21 @@ const NUMERIC = new Set([
 const $ = (id) => document.getElementById(id);
 const send = (message) => chrome.runtime.sendMessage(message);
 
+/**
+ * Settings inputs are filled ONCE, when the popup opens.
+ *
+ * The periodic status refresh used to refill them too, skipping only the
+ * focused field - so typing a URL and then clicking into the key field blanked
+ * the URL behind you, and Save stored empty strings. Never refill a form the
+ * user is in the middle of.
+ */
+let fieldsPrimed = false;
+
+function message(el, text, kind) {
+  el.className = `msg ${kind}`;
+  el.textContent = text;
+}
+
 function ago(ts) {
   if (!ts) return "never";
   const mins = Math.round((Date.now() - ts) / 60000);
@@ -36,11 +51,20 @@ function ago(ts) {
   return `${Math.round(mins / 60)}h ago`;
 }
 
-// Settings inputs are filled ONCE, on open. The old code refilled them on every
-// 4-second refresh, skipping only the focused field - so typing a URL and then
-// clicking into the key field blanked the URL, and Save stored empty strings.
-// The symptom was "not configured" immediately after saving, with no clue why.
-let fieldsPrimed = false;
+// --- tabs -----------------------------------------------------------------
+
+for (const button of document.querySelectorAll("nav button")) {
+  button.addEventListener("click", () => {
+    for (const b of document.querySelectorAll("nav button")) {
+      b.classList.toggle("active", b === button);
+    }
+    for (const s of document.querySelectorAll("section")) {
+      s.classList.toggle("active", s.id === `${button.dataset.tab}-tab`);
+    }
+  });
+}
+
+// --- render ---------------------------------------------------------------
 
 async function render() {
   const { cfg, st, lastCookieSync } = await send({ type: "STATUS" });
@@ -73,41 +97,56 @@ async function render() {
   $("queued").textContent = String(st.queue.length);
   $("synced").textContent = ago(lastCookieSync);
 
-  $("log").innerHTML = (st.lastLog ?? [])
-    .map((l) => {
-      const time = new Date(l.at).toLocaleTimeString();
-      const text = `${time} ${l.message}`.replace(/</g, "&lt;");
-      return `<div class="${l.level}">${text}</div>`;
-    })
-    .join("");
+  const lines = st.lastLog ?? [];
+  $("log").innerHTML = lines.length
+    ? lines
+        .map((l) => {
+          const time = new Date(l.at).toLocaleTimeString();
+          const text = String(l.message).replace(/</g, "&lt;");
+          return `<div class="${l.level}"><span class="time">${time}</span>${text}</div>`;
+        })
+        .join("")
+    : '<div class="empty">Nothing yet. Press Start on the Status tab.</div>';
 }
+
+// --- actions --------------------------------------------------------------
 
 $("start").addEventListener("click", async () => {
   const result = await send({ type: "START" });
   if (result && result.ok === false) {
-    const box = $("saveError");
-    box.className = "err";
-    box.style.display = "block";
-    box.textContent = result.error;
-    // Open Settings so the empty fields are actually visible.
-    document.querySelector("details").open = true;
+    message($("statusMsg"), result.error, "bad");
+  } else {
+    message($("statusMsg"), "Running. Watch the Logs tab.", "good");
   }
   render();
 });
 
 $("stop").addEventListener("click", async () => {
   await send({ type: "STOP" });
+  message($("statusMsg"), "Stopped.", "good");
   render();
 });
 
 $("refresh").addEventListener("click", async () => {
-  $("refresh").textContent = "Updating…";
+  const button = $("refresh");
+  button.disabled = true;
+  button.textContent = "Updating…";
   const result = await send({ type: "REFRESH_COOKIES" });
-  $("refresh").textContent = result?.ok ? "Updated ✓" : "Failed — see log";
-  setTimeout(() => {
-    $("refresh").textContent = "Update tokens now";
-    render();
-  }, 1800);
+  message(
+    $("statusMsg"),
+    result?.ok
+      ? `Tokens updated for ${result.username}.`
+      : `Update failed: ${result?.error ?? "unknown"}`,
+    result?.ok ? "good" : "bad",
+  );
+  button.disabled = false;
+  button.textContent = "Update tokens now";
+  render();
+});
+
+$("clearLog").addEventListener("click", async () => {
+  await send({ type: "CLEAR_LOG" });
+  render();
 });
 
 $("save").addEventListener("click", async () => {
@@ -117,43 +156,39 @@ $("save").addEventListener("click", async () => {
     config[key] = NUMERIC.has(key) ? Number(raw) || 0 : raw;
   }
 
-  // Refuse to store a half-filled config. Saving blanks and only finding out
-  // from a background log line is the failure this whole screen should prevent.
+  // Refuse a half-filled config rather than storing blanks and letting the
+  // background discover it a tick later.
   const problems = [];
   if (!config.supabaseUrl) problems.push("Supabase URL is empty");
   else if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(config.supabaseUrl)) {
-    problems.push("Supabase URL should look like https://xxxx.supabase.co");
+    problems.push("URL should look like https://xxxx.supabase.co");
   }
   if (!config.anonKey) problems.push("anon key is empty");
   else if (config.anonKey.length < 40) problems.push("anon key looks too short");
 
   if (problems.length) {
-    $("saveError").textContent = problems.join(" · ");
-    $("saveError").style.display = "block";
+    message($("saveError"), problems.join(" · "), "bad");
     return;
   }
-  $("saveError").style.display = "none";
-  // The refresh interval is the one value with a hard range: below 2h is
-  // needless churn, above 12h and a session can expire before its next sync.
-  config.cookieHours = Math.min(Math.max(config.cookieHours || 6, 2), 12);
 
+  const button = $("save");
+  button.disabled = true;
+  button.textContent = "Saving…";
   await send({ type: "SAVE_CONFIG", config });
 
-  // Prove the credentials actually reach Supabase, rather than reporting
-  // "saved" and letting the first background tick discover the truth an hour
-  // later. A wrong key is the single most likely setup mistake.
-  $("save").textContent = "Testing…";
+  // Prove the credentials reach Supabase now, rather than letting the first
+  // background tick discover a bad key much later.
+  button.textContent = "Testing…";
   const test = await send({ type: "TEST_CONNECTION" });
-  const box = $("saveError");
-  box.style.display = "block";
-  if (test?.ok) {
-    box.className = "err ok";
-    box.textContent = `Connected. ${test.detail ?? ""}`.trim();
-  } else {
-    box.className = "err";
-    box.textContent = `Saved, but the connection failed: ${test?.error ?? "unknown"}`;
-  }
-  $("save").textContent = "Save & test";
+  message(
+    $("saveError"),
+    test?.ok
+      ? `Connected. ${test.detail ?? ""}`.trim()
+      : `Saved, but the connection failed: ${test?.error ?? "unknown"}`,
+    test?.ok ? "good" : "bad",
+  );
+  button.disabled = false;
+  button.textContent = "Save & test";
   render();
 });
 
