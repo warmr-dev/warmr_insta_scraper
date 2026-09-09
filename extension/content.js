@@ -141,12 +141,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // async response
   }
   if (message?.type === "WHOAMI") {
-    // The logged-in username, read from the page's own bootstrap data. Used to
-    // label this browser profile without asking the operator to type it.
-    const match = document.documentElement.innerHTML.match(
-      /"username":"([A-Za-z0-9._]{1,30})","is_verified"/,
-    );
-    sendResponse({ username: match ? match[1] : null });
+    // The VIEWER's username, from the page bootstrap.
+    //
+    // `"username":"x","is_verified"` was wrong: on a profile page the first
+    // such match is the profile being LOOKED AT, so this reported whichever
+    // account the operator happened to be browsing. These keys belong to the
+    // viewer specifically, and are tried in order of how tightly they are
+    // bound to the logged-in session.
+    const html = document.documentElement.innerHTML;
+    const patterns = [
+      /"viewer"\s*:\s*\{[^}]*?"username"\s*:\s*"([A-Za-z0-9._]{1,30})"/,
+      /"viewerId"\s*:\s*"\d+"[^}]*?"username"\s*:\s*"([A-Za-z0-9._]{1,30})"/,
+      /"CURRENT_USER_ID"[^}]*?"username"\s*:\s*"([A-Za-z0-9._]{1,30})"/,
+    ];
+    let username = null;
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match) {
+        username = match[1];
+        break;
+      }
+    }
+    sendResponse({ username });
     return false;
   }
   return false;

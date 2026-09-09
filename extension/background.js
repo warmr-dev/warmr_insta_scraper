@@ -209,18 +209,54 @@ async function refreshCookies(reason = "scheduled") {
   }
 }
 
-/** Ask an Instagram tab who is logged in, opening one briefly if needed. */
+/**
+ * Which Instagram account this Chrome profile is logged into.
+ *
+ * Tried cheapest first, because opening a tab to answer a question the cookies
+ * already answer is both slow and visible:
+ *
+ * 1. `ds_user_id` from the cookie jar, resolved to a username through the
+ *    public user-info endpoint. No tab, works even with no Instagram open.
+ * 2. An Instagram tab that happens to be open already.
+ * 3. Only then, a background tab.
+ *
+ * The username is not cosmetic: it is what `ext_claim_targets` records as the
+ * owner of each target, and therefore what lets a dead profile's targets be
+ * reclaimed by the others.
+ */
 async function detectUsername() {
+  const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
+  const dsUserId = all.find((c) => c.name === "ds_user_id")?.value;
+
+  if (dsUserId) {
+    try {
+      const response = await fetch(
+        `https://i.instagram.com/api/v1/users/${dsUserId}/info/`,
+        { headers: { "User-Agent": "Instagram 302.0.0.23.114 Android" } },
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const username = data?.user?.username;
+        if (username) return username;
+      }
+    } catch {
+      // Offline, or Instagram declined. Fall through to the tab methods.
+    }
+  }
+
+  // Ask a tab that is already open - still no new window for the operator.
   const existing = await chrome.tabs.query({ url: "https://www.instagram.com/*" });
   for (const tab of existing) {
     try {
       const res = await chrome.tabs.sendMessage(tab.id, { type: "WHOAMI" });
       if (res?.username) return res.username;
     } catch {
-      // no content script in that tab; try the next
+      // No content script in that tab (it loaded before the extension did).
     }
   }
 
+  // Last resort. Only reached when the cookies carry no ds_user_id AND nothing
+  // is open, which in practice means the profile is not logged in at all.
   const tab = await chrome.tabs.create({
     url: "https://www.instagram.com/",
     active: false,
@@ -502,9 +538,15 @@ async function testConnection() {
 
   const username = cfg.session || (await detectUsername()) || "";
   if (!username) {
+    // By this point the cookie lookup, an open tab and a fresh tab have all
+    // failed, which almost always means the profile is not logged in.
+    const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
+    const hasSession = all.some((c) => c.name === "sessionid" && c.value);
     return {
       ok: false,
-      error: "could not detect the Instagram account - is this profile logged in?",
+      error: hasSession
+        ? "logged in, but the username could not be read - type it under Settings"
+        : "this Chrome profile is not logged into Instagram - log in, then try again",
     };
   }
   await chrome.storage.local.set({ session: username });
