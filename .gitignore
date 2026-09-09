@@ -53,3 +53,10 @@ cookies/
 
 # Скачанные сторис для ручной проверки - медиа не хранится (ТЗ §10)
 downloaded_stories/
+
+# Target lists. These hold tens of thousands of real people's names, handles
+# and profile URLs; the database is where that belongs, not the repo history -
+# which is public-adjacent and, unlike a table, cannot be selectively deleted.
+*.xlsx
+*.xlsm
+estimation/*.csv

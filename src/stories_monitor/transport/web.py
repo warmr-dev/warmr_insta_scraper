@@ -19,7 +19,9 @@ Limitations, measured rather than assumed:
   supporting cookies (`ig_did`, `mid`, `datr`, `rur`). Copy them all.
 - Sessions expire and cannot be renewed from here - there is no login flow.
 
-Read-only. Never calls `media/seen/` or any write endpoint (SPEC section 11).
+Almost read-only. The single write is `friendships/create/` (`user_follow`),
+which is what puts a target's stories into this session's tray in the first
+place. `media/seen/` and every other write stay forbidden (SPEC section 11).
 """
 
 from __future__ import annotations
@@ -33,12 +35,15 @@ import httpx
 
 from ..logging_setup import get_logger
 from .base import (
+    ChallengeRequiredError,
+    FeedbackRequiredError,
     LoginRequiredError,
     RateLimitedError,
     StoryItem,
     TransportError,
     TrayEntry,
     TrayResponse,
+    UserNotFoundError,
 )
 
 log = get_logger(__name__)
@@ -58,9 +63,25 @@ _MIN_GAP_SEC = 1.5
 _MAX_GAP_SEC = 4.0
 
 # reels_media takes reel ids as repeated query params, and too many at once
-# gives a 400 that is indistinguishable from an expired session. Measured: 74
-# ids failed, 20 succeeded, on the same cookies seconds apart.
-_REELS_CHUNK = 20
+# gives a 400 that is indistinguishable from an expired session.
+#
+# The ceiling was measured rather than guessed, by climbing the ladder against
+# a live session (fl.uffy16.2, 76 followings, real ids not padding):
+#
+#     20 -> 200    32 -> 200    34 -> 200    35 -> 200    36 -> 400
+#
+# and 20 answered 200 again immediately afterwards, so 36 is a request-size
+# limit, not a dying session. The boundary is reproducible and sharp.
+#
+# 30 is deliberately below the measured 35: the limit is almost certainly on
+# URL length rather than id count, so an id list of longer numeric pks would
+# hit it sooner. That headroom costs one extra call per 210 followings and buys
+# immunity to a 400 that the collector would misread as an expired session -
+# the exact failure that disabled 8 of 11 sessions once already.
+#
+# At 30 a cycle costs a third fewer requests than at 20, which matters: request
+# volume per session, not follow count, is what the throttling actually tracks.
+_REELS_CHUNK = 30
 
 # Cookies the feed endpoints need. sessionid alone yields a 302 to the login page.
 COOKIE_NAMES = ("sessionid", "csrftoken", "ds_user_id", "ig_did", "mid", "datr", "rur")
@@ -187,8 +208,14 @@ class WebTransport:
     """Reads the story tray and story items using browser cookies.
 
     Implements the subset of `InstagramTransport` that the web API supports:
-    `reels_tray` and `reels_media`. Login, follow, and friendship are not
-    available here by design - this is a read path, not an account driver.
+    `reels_tray`, `reels_media` and `user_follow`. Login is not available here -
+    web sessions cannot be renewed from code, only re-pasted.
+
+    The follow is the one write. It authenticates purely by cookie: the same
+    `X-CSRFToken` the reads already carry is what the browser sends on a follow,
+    so no new credential is needed - but a session whose `csrftoken` is missing
+    can still read and will 403 on every write, which is why `user_follow`
+    checks for it up front instead of discovering it one 403 at a time.
     """
 
     def __init__(
@@ -291,12 +318,43 @@ class WebTransport:
         response = self._client.get(
             f"{_BASE}/{path}", params=params, cookies=self.cookies, headers=headers
         )
+        return self._handle(path, response)
 
+    def _handle(self, path: str, response: httpx.Response) -> dict[str, Any]:
+        """Map one response to JSON or to the right exception.
+
+        Shared by `_get` and `_post` so a write can never drift into a laxer
+        reading of the same status codes than a read uses.
+        """
         # Learn the claim for subsequent calls. Instagram rotates it, so take
         # whatever the latest response carries.
         claim = response.headers.get("x-ig-set-www-claim")
         if claim:
             self._www_claim = claim
+
+        # A rotated CSRF token arrives as a Set-Cookie. Writes are rejected the
+        # moment the header stops matching the cookie, so adopt the new value
+        # rather than keep presenting the stale one.
+        fresh_csrf = response.cookies.get("csrftoken")
+        if fresh_csrf and fresh_csrf != self.cookies.get("csrftoken"):
+            self.cookies["csrftoken"] = fresh_csrf
+            self._client.headers["X-CSRFToken"] = fresh_csrf
+            log.info("web_csrf_rotated", account=self.username_key)
+
+        # `feedback_required` is Instagram's action block. It arrives as a 400
+        # with that word in the body, so the generic 400 handling below would
+        # read it as a dead session and disable a session that is merely
+        # follow-blocked. Check it first, and only for the write path.
+        body_lc = response.text[:400].lower() if response.status_code >= 400 else ""
+        if "feedback_required" in body_lc or "action_blocked" in body_lc:
+            raise FeedbackRequiredError(
+                f"action blocked on {path} - Instagram is refusing writes from "
+                "this session; stop following and let it rest"
+            )
+        if "checkpoint_required" in body_lc or "challenge_required" in body_lc:
+            raise ChallengeRequiredError(
+                f"checkpoint on {path} - a human must clear it in the browser"
+            )
 
         if response.status_code in (301, 302, 303, 307, 308):
             raise LoginRequiredError(
@@ -342,6 +400,105 @@ class WebTransport:
             return response.json()
         except ValueError as exc:
             raise TransportError(f"web API returned non-JSON on {path}") from exc
+
+    def _post(self, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """POST one write, with the headers a browser sends on a write.
+
+        A browser's follow XHR differs from its reads in two ways that are easy
+        to miss and cheap to get right:
+
+        - `Origin` is present on a cross-origin-capable POST but not on a GET.
+          Sending a POST without it is a shape no browser produces.
+        - `Content-Type` is form-encoded, not JSON. Instagram's web API answers
+          a JSON body with a 400 that looks exactly like a dead session.
+
+        The `Referer` points at the profile being followed, because that is the
+        page a person would be on when they click Follow.
+        """
+        csrf = self.cookies.get("csrftoken")
+        if not csrf:
+            raise LoginRequiredError(
+                "cookies have no csrftoken - reads work without it but every write "
+                "is rejected; re-copy the cookie set from the browser"
+            )
+
+        headers = {
+            "X-CSRFToken": csrf,
+            "Origin": "https://www.instagram.com",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        if self._www_claim:
+            headers["X-IG-WWW-Claim"] = self._www_claim
+        if referer := (data or {}).pop("__referer", None):
+            headers["Referer"] = str(referer)
+
+        response = self._client.post(
+            f"{_BASE}/{path}", data=data or {}, cookies=self.cookies, headers=headers
+        )
+        return self._handle(path, response)
+
+    # --- the one write ---
+
+    def user_follow(self, user_id: int, username: str | None = None) -> bool:
+        """Follow one account. True on a new follow or request, False if already following.
+
+        Matches `LiveTransport.user_follow` so the follower worker does not care
+        which transport it holds.
+
+        Instagram answers a successful follow with `friendship_status`, and the
+        interesting case is `outgoing_request`: a private target yields a pending
+        request, not a follow, and its stories stay invisible until a human
+        approves. That is reported as success because the action did land and
+        must not be retried - the caller distinguishes the two via `following`.
+        """
+        data = {
+            "user_id": str(user_id),
+            # A person clicks Follow from the target's profile, so that is the
+            # page the request should claim to come from.
+            "__referer": (
+                f"https://www.instagram.com/{username}/"
+                if username
+                else "https://www.instagram.com/"
+            ),
+        }
+        try:
+            payload = self._post(f"friendships/create/{user_id}/", data)
+        except TransportError:
+            raise
+        except httpx.HTTPError as exc:  # network-level, not an API verdict
+            raise TransportError(f"follow request failed: {exc}") from exc
+
+        status = payload.get("friendship_status") or {}
+        if payload.get("status") == "fail":
+            message = str(payload.get("message") or "").lower()
+            if "not found" in message or "user not found" in message:
+                raise UserNotFoundError(f"target {user_id} no longer exists")
+            raise TransportError(f"follow rejected for {user_id}: {message or 'no reason given'}")
+
+        followed = bool(status.get("following"))
+        requested = bool(status.get("outgoing_request"))
+        log.info(
+            "web_follow",
+            target=user_id,
+            following=followed,
+            outgoing_request=requested,
+        )
+        # `previous_following` means we already followed them before this call -
+        # the action was a no-op and should not be billed against the day's cap.
+        return followed or requested
+
+    def user_friendship(self, user_id: int) -> dict[str, Any]:
+        """Current friendship state with one account.
+
+        Used to confirm that a pending request to a private target was approved.
+        """
+        data = self._get(f"friendships/show/{user_id}/")
+        return {
+            "following": bool(data.get("following")),
+            "outgoing_request": bool(data.get("outgoing_request")),
+            "is_private": bool(data.get("is_private")),
+            "raw": data,
+        }
 
     # --- reads ---
 

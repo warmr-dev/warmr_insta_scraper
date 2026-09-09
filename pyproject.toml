@@ -17,6 +17,9 @@ dependencies = [
     # httpx[http2]: настоящий Chrome всегда ходит на instagram.com по h2;
     # без пакета h2 httpx молча остаётся на HTTP/1.1.
     "httpx[http2]>=0.28",
+    # Reading the target list straight from the .xlsx export, so nobody has to
+    # remember to re-save it as CSV first.
+    "openpyxl>=3.1",
     "pillow>=11.0",
     "pytesseract>=0.3.13",
     "anthropic>=0.40",
