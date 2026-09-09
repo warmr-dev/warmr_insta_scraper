@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Table } from "@/components/Table";
-import { getTargetActivity } from "@/lib/queries";
+import { getFollowCoverage, getTargetActivity } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,11 @@ const STATUS_HINT: Record<string, string> = {
 };
 
 export default async function TargetsPage() {
-  const targets = await getTargetActivity(200);
+  const [targets, coverage] = await Promise.all([
+    getTargetActivity(200),
+    getFollowCoverage(),
+  ]);
+  const freePool = coverage.find((c) => c.session_username === null);
   return (
     <Shell
       title="Monitored Accounts"
@@ -70,8 +74,59 @@ export default async function TargetsPage() {
         ))}
       </div>
 
+      {/* Which session token follows how much. The "unassigned" row is the
+          free pool: a dead session's targets land there until a live session
+          claims them, so a number climbing here means a session has died. */}
+      {coverage.length > 0 && (
+        <div className="mb-6 overflow-x-auto rounded-lg border border-slate-800">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-900/60 text-left text-xs uppercase text-slate-400">
+              <tr>
+                <th className="px-4 py-2">Session token</th>
+                <th className="px-4 py-2">Following</th>
+                <th className="px-4 py-2">Requested</th>
+                <th className="px-4 py-2">Queued</th>
+                <th className="px-4 py-2">Checking now</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {coverage.map((row) => (
+                <tr key={row.session_username ?? "unassigned"}>
+                  <td className="px-4 py-2">
+                    {row.session_username ? (
+                      <span className={row.is_active ? "text-slate-200" : "text-rose-400"}>
+                        {row.session_username}
+                        {!row.is_active && " (dead)"}
+                      </span>
+                    ) : (
+                      <span className="text-amber-300">unassigned — free to claim</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 tabular-nums">{row.following}</td>
+                  <td className="px-4 py-2 tabular-nums">{row.requested}</td>
+                  <td className="px-4 py-2 tabular-nums">{row.claimed}</td>
+                  <td className="px-4 py-2 tabular-nums">
+                    {row.checking_now > 0 ? (
+                      <span className="text-sky-300">{row.checking_now}</span>
+                    ) : (
+                      <span className="text-slate-600">0</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {freePool && freePool.claimed + freePool.following > 0 && (
+            <p className="border-t border-slate-800 bg-slate-900/40 px-4 py-2 text-xs text-slate-400">
+              {freePool.claimed + freePool.following} target(s) are unassigned and
+              will be picked up by the next session that has budget.
+            </p>
+          )}
+        </div>
+      )}
+
       <Table
-        head={["Account", "Status", "Stories", "Photos", "Analysed", "Leads", "Best", "Last story"]}
+        head={["Account", "Followed by", "Status", "Stories", "Photos", "Analysed", "Leads", "Best", "Last story"]}
         empty="No monitored accounts have posted yet"
       >
         {targets.map((target) => {
@@ -98,6 +153,28 @@ export default async function TargetsPage() {
               >
                 ↗
               </a>
+            </td>
+            <td className="whitespace-nowrap px-4 py-3 text-xs">
+              {target.followed_by ? (
+                <span className="text-slate-300">
+                  {target.followed_by}
+                  {target.is_checking && (
+                    <span
+                      title="a session is acting on this account right now"
+                      className="ml-1.5 text-sky-400"
+                    >
+                      ●
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-slate-600">—</span>
+              )}
+              {target.is_private && (
+                <span className="ml-1.5 text-amber-500" title="private account">
+                  🔒
+                </span>
+              )}
             </td>
             <td className="px-4 py-3">
               <span className={`rounded px-2 py-0.5 text-xs ${STATUS_STYLE[target.status]}`}>

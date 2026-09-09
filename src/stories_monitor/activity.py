@@ -44,6 +44,8 @@ def record(
     targets: list[str] | None = None,
     item_count: int | None = None,
     duration_ms: int | None = None,
+    target_user_id: int | None = None,
+    target_username: str | None = None,
 ) -> None:
     """Append one activity row. Never raises - logging must not break collection."""
     trimmed: list[str] | None = None
@@ -63,6 +65,8 @@ def record(
                     targets=trimmed,
                     item_count=item_count,
                     duration_ms=duration_ms,
+                    target_user_id=target_user_id,
+                    target_username=target_username[:64] if target_username else None,
                 )
             )
     except Exception as exc:  # noqa: BLE001 - the trail is never worth a cycle
@@ -87,7 +91,7 @@ def recent(username: str | None = None, limit: int = 200) -> list[dict[str, Any]
     """Newest-first activity, for the CLI. The dashboard reads SQL directly."""
     sql = """
         SELECT username, phase, status, message, targets, item_count,
-               duration_ms, occurred_at
+               duration_ms, target_user_id, target_username, occurred_at
           FROM activity_log
          {where}
          ORDER BY occurred_at DESC

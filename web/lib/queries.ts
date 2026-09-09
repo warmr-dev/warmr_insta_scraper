@@ -159,6 +159,13 @@ export type TargetActivity = {
   best_score: number;
   last_story_at: string | null;
   status: string;
+  // Which session token follows this account, whether it is being worked on
+  // right now, and where the account came from in the import file.
+  followed_by: string | null;
+  is_checking: boolean;
+  follow_state: string | null;
+  source_account: string | null;
+  is_private: boolean;
 };
 
 /**
@@ -182,10 +189,18 @@ export async function getTargetActivity(limit = 100): Promise<TargetActivity[]> 
                WHEN coalesce(max(a.final_score), 0) >= 4 THEN 'promising'
                WHEN count(a.story_id) >= 8 THEN 'exhausted'
                ELSE 'unproven'
-             END AS status
+             END AS status,
+             -- The follow assignment. min()/bool_or() only because the GROUP BY
+             -- is on username; session_follows holds at most one row per target.
+             min(f.followed_by) AS followed_by,
+             coalesce(bool_or(f.is_checking), false) AS is_checking,
+             min(f.state) AS follow_state,
+             min(f.source_account) AS source_account,
+             coalesce(bool_or(f.is_private), false) AS is_private
       FROM targets t
       LEFT JOIN stories s ON s.target_user_id = t.user_id
       LEFT JOIN story_analysis a ON a.story_id = s.story_id
+      LEFT JOIN session_follows f ON f.target_user_id = t.user_id
       GROUP BY t.username, t.instagram_url
       HAVING count(s.story_id) > 0
       ORDER BY count(s.story_id) DESC
@@ -685,4 +700,61 @@ export async function getTargetDetail(
 
     return { target: row?.target ?? null, stories: row?.stories ?? [] };
   });
+}
+
+export type FollowCoverage = {
+  session_username: string | null;
+  following: number;
+  requested: number;
+  claimed: number;
+  checking_now: number;
+  is_active: boolean | null;
+};
+
+/**
+ * Who follows how much, and what each session is touching right now.
+ *
+ * The `session_username IS NULL` row is the free pool - targets nobody owns,
+ * which is where a dead session's assignments land until a survivor claims
+ * them. Seeing that number climb is the signal that a session has died.
+ */
+export async function getFollowCoverage(): Promise<FollowCoverage[]> {
+  return cached("follow-coverage", () =>
+    query<FollowCoverage>(`
+      SELECT f.session_username,
+             count(*) FILTER (WHERE f.state = 'following') AS following,
+             count(*) FILTER (WHERE f.state = 'requested') AS requested,
+             count(*) FILTER (WHERE f.state = 'claimed') AS claimed,
+             count(*) FILTER (WHERE f.is_checking) AS checking_now,
+             bool_or(c.is_active) AS is_active
+      FROM session_follows f
+      LEFT JOIN cookies c ON c.username = f.session_username
+      GROUP BY f.session_username
+      ORDER BY count(*) DESC
+    `),
+  );
+}
+
+export type LiveCheck = {
+  session_username: string;
+  target_username: string;
+  last_checked_at: string | null;
+};
+
+/** What each session is looking at this second - the live view. */
+export async function getLiveChecks(limit = 50): Promise<LiveCheck[]> {
+  return cached(`live-checks:${limit}`, () =>
+    query<LiveCheck>(
+      `
+      SELECT followed_by AS session_username,
+             username AS target_username,
+             last_checked_at
+      FROM session_follows
+      WHERE is_checking
+      ORDER BY last_checked_at DESC NULLS LAST
+      LIMIT $1
+    `,
+      [limit],
+    ),
+  );
 }
