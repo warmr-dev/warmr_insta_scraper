@@ -43,6 +43,16 @@ function message(el, text, kind) {
   el.textContent = text;
 }
 
+/** Mirrors `awake()` in background.js, including the wrap past midnight. */
+function withinHours(cfg) {
+  const hour = new Date().getHours();
+  const start = Number(cfg.wakeHour);
+  const end = Number(cfg.sleepHour);
+  if (start === end) return true;
+  if (start < end) return hour >= start && hour < end;
+  return hour >= start || hour < end;
+}
+
 function ago(ts) {
   if (!ts) return "never";
   const mins = Math.round((Date.now() - ts) / 60000);
@@ -82,6 +92,11 @@ async function render() {
     const hours = Math.round((st.blockedUntil - Date.now()) / 3600000);
     status.textContent = `blocked (~${hours}h)`;
     status.className = "warn";
+  } else if (cfg.enabled && !withinHours(cfg)) {
+    // "running" while nothing can run is the reading that sent someone to the
+    // logs to find out why. Say it on the status line instead.
+    status.textContent = `asleep until ${cfg.wakeHour}:00`;
+    status.className = "warn";
   } else if (cfg.enabled) {
     status.textContent = "running";
     status.className = "on";
@@ -115,6 +130,8 @@ $("start").addEventListener("click", async () => {
   const result = await send({ type: "START" });
   if (result && result.ok === false) {
     message($("statusMsg"), result.error, "bad");
+  } else if (result?.asleep) {
+    message($("statusMsg"), result.detail, "bad");
   } else {
     message($("statusMsg"), "Running. Watch the Logs tab.", "good");
   }

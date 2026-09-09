@@ -80,7 +80,10 @@ Writes are policed far harder than reads, and an even drip of one follow every
 N seconds is not a slower human — it is an obvious robot. So:
 
 - **Bursts** of 2–5 follows, 45–150s apart, then a **25–90 minute rest**.
-- **Sleep hours**: no follows outside the configured waking window.
+- **Sleep hours**: no follows outside the configured waking window (default
+  08:00-24:00 local). Outside it the extension sleeps until morning and says so
+  on the Status tab - set **Wake hour 0 / Sleep hour 24** under Settings to run
+  around the clock, at the cost of looking less like a person.
 - Every interval is **jittered**; nothing runs on a fixed cadence.
 - On `feedback_required` the profile **stops following for 24–48h** and hands
   its whole queue back. Reads are untouched, so story collection continues —

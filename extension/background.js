@@ -106,6 +106,15 @@ function awake(cfg) {
   return hour >= start || hour < end;
 }
 
+/** Minutes until the waking window opens again. */
+function minutesUntilWaking(cfg) {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(cfg.wakeHour, 0, 0, 0);
+  if (target <= now) target.setDate(target.getDate() + 1);
+  return (target - now) / 60000;
+}
+
 // --- server ---------------------------------------------------------------
 
 /**
@@ -306,8 +315,17 @@ async function tick() {
   }
 
   if (!awake(cfg)) {
-    await log("outside waking hours - sleeping");
-    return scheduleNext(rand(20, 45));
+    // Sleep until the window opens rather than waking every half hour to say
+    // the same thing. The extra 0-40 minutes means a fleet of profiles does not
+    // all start following at 08:00:00 exactly.
+    const minutes = minutesUntilWaking(cfg) + rand(0, 40);
+    const at = new Date(Date.now() + minutes * 60000);
+    await log(
+      `asleep until ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` +
+        ` (waking hours are ${cfg.wakeHour}:00-${cfg.sleepHour % 24}:00) - ` +
+        "change them under Settings to follow now",
+    );
+    return scheduleNext(minutes);
   }
 
   // Roll the day over.
@@ -419,8 +437,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       await chrome.storage.local.set({ enabled: true, blockedUntil: 0 });
       await applySchedules();
       await log("started");
+      // Say up front if nothing will happen tonight, rather than letting the
+      // Status tab read "running" while the log quietly says otherwise.
+      const asleep = !awake(cfg);
       await tick();
-      sendResponse({ ok: true });
+      sendResponse({
+        ok: true,
+        asleep,
+        detail: asleep
+          ? `Started, but it is outside waking hours (${cfg.wakeHour}:00-${
+              cfg.sleepHour % 24
+            }:00). Nothing will run until then - widen the window in Settings to follow now.`
+          : null,
+      });
     } else if (message?.type === "STOP") {
       await chrome.storage.local.set({ enabled: false });
       await chrome.alarms.clear(ALARM_FOLLOW);
