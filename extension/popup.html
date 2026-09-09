@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Warmr Follower</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        width: 340px;
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      h1 { font-size: 14px; margin: 0 0 2px; }
+      .sub { color: #94a3b8; font-size: 11px; margin-bottom: 12px; }
+      label { display: block; font-size: 11px; color: #94a3b8; margin: 9px 0 3px; }
+      input {
+        width: 100%; box-sizing: border-box; padding: 6px 8px;
+        background: #1e293b; border: 1px solid #334155; border-radius: 5px;
+        color: #e2e8f0; font-size: 12px;
+      }
+      .row { display: flex; gap: 8px; }
+      .row > div { flex: 1; }
+      button {
+        padding: 7px 12px; border: 0; border-radius: 5px; cursor: pointer;
+        font-size: 12px; font-weight: 600; color: #fff;
+      }
+      .primary { background: #0284c7; }
+      .stop { background: #b91c1c; }
+      .ghost { background: #334155; }
+      .bar { display: flex; gap: 8px; margin-top: 12px; }
+      .bar button { flex: 1; }
+      .stat {
+        display: flex; justify-content: space-between;
+        padding: 4px 0; border-bottom: 1px solid #1e293b; font-size: 12px;
+      }
+      .stat span:last-child { color: #f1f5f9; font-variant-numeric: tabular-nums; }
+      .on { color: #4ade80; } .off { color: #94a3b8; } .warn { color: #fbbf24; }
+      #log {
+        margin-top: 10px; max-height: 130px; overflow-y: auto;
+        background: #0b1220; border: 1px solid #1e293b; border-radius: 5px;
+        padding: 6px; font-size: 11px; color: #94a3b8;
+      }
+      #log div { padding: 1px 0; }
+      #log .error { color: #f87171; }
+      #log .warn { color: #fbbf24; }
+      details { margin-top: 10px; }
+      summary { cursor: pointer; color: #94a3b8; font-size: 11px; }
+      .hint { color: #64748b; font-size: 10px; margin-top: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>Warmr Follower</h1>
+    <div class="sub">One Chrome profile = one Instagram account.</div>
+
+    <div class="stat"><span>Status</span><span id="status" class="off">stopped</span></div>
+    <div class="stat"><span>Account</span><span id="account">—</span></div>
+    <div class="stat"><span>Followed today</span><span id="today">0</span></div>
+    <div class="stat"><span>Queued</span><span id="queued">0</span></div>
+    <div class="stat"><span>Cookies synced</span><span id="synced">never</span></div>
+
+    <div class="bar">
+      <button id="start" class="primary">Start</button>
+      <button id="stop" class="stop">Stop</button>
+    </div>
+    <div class="bar">
+      <button id="refresh" class="ghost">Update tokens now</button>
+    </div>
+
+    <details>
+      <summary>Settings</summary>
+
+      <label>Dashboard URL</label>
+      <input id="apiBase" placeholder="https://your-dashboard.example.com" />
+
+      <label>Extension token</label>
+      <input id="token" type="password" placeholder="EXTENSION_TOKEN" />
+
+      <label>Instagram username (blank = detect)</label>
+      <input id="session" placeholder="detected automatically" />
+
+      <div class="row">
+        <div>
+          <label>Token refresh (hours)</label>
+          <input id="cookieHours" type="number" min="2" max="12" />
+        </div>
+        <div>
+          <label>Daily limit (0 = none)</label>
+          <input id="dailyLimit" type="number" min="0" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Gap min (sec)</label>
+          <input id="gapMinSec" type="number" min="10" />
+        </div>
+        <div>
+          <label>Gap max (sec)</label>
+          <input id="gapMaxSec" type="number" min="15" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Rest min (min)</label>
+          <input id="restMinMin" type="number" min="1" />
+        </div>
+        <div>
+          <label>Rest max (min)</label>
+          <input id="restMaxMin" type="number" min="2" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Wake hour</label>
+          <input id="wakeHour" type="number" min="0" max="23" />
+        </div>
+        <div>
+          <label>Sleep hour</label>
+          <input id="sleepHour" type="number" min="1" max="24" />
+        </div>
+      </div>
+      <div class="hint">
+        Follows come in bursts of 2–5 with a long rest between them. Gaps are
+        jittered, so a fixed cadence never shows.
+      </div>
+
+      <div class="bar">
+        <button id="save" class="primary">Save settings</button>
+      </div>
+    </details>
+
+    <div id="log"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

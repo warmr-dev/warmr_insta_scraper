@@ -1,0 +1,416 @@
+/**
+ * The orchestrator: claims targets, opens each profile, follows, reports back,
+ * and keeps this profile's Instagram cookies fresh in Supabase.
+ *
+ * One Chrome profile is one Instagram account. The extension never needs to
+ * know a password and never replays cookies anywhere - it acts inside the
+ * session that is already logged in, which is exactly why the follow works
+ * here when an out-of-browser request does not.
+ *
+ * Pacing is deliberately human. Instagram polices writes far harder than reads,
+ * and an even drip of one follow every N seconds is not a slower human, it is
+ * an obvious robot. So follows come in small bursts with long rests between
+ * them, the account sleeps at night, and every interval is jittered.
+ */
+
+const DEFAULTS = {
+  apiBase: "",
+  token: "",
+  session: "",
+  enabled: false,
+  // How many follows per day. 0 means unlimited - the rhythm still paces it.
+  dailyLimit: 0,
+  // Minutes between cookie refreshes. The popup constrains this to 2-12 hours.
+  cookieHours: 6,
+  // Seconds between follows inside one burst.
+  gapMinSec: 45,
+  gapMaxSec: 150,
+  // Follows per burst, then a long rest.
+  burstMin: 2,
+  burstMax: 5,
+  restMinMin: 25,
+  restMaxMin: 90,
+  // Local hours the account is "awake". Following at 4am every night is a tell.
+  wakeHour: 8,
+  sleepHour: 24,
+};
+
+const COOKIE_NAMES = [
+  "sessionid",
+  "csrftoken",
+  "ds_user_id",
+  "ig_did",
+  "mid",
+  "datr",
+  "rur",
+];
+
+const ALARM_FOLLOW = "warmr-follow";
+const ALARM_COOKIES = "warmr-cookies";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rand = (min, max) => min + Math.random() * (max - min);
+
+async function config() {
+  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
+  return { ...DEFAULTS, ...stored };
+}
+
+async function state() {
+  const s = await chrome.storage.local.get([
+    "queue",
+    "doneToday",
+    "day",
+    "burstLeft",
+    "blockedUntil",
+    "lastLog",
+  ]);
+  return {
+    queue: s.queue ?? [],
+    doneToday: s.doneToday ?? 0,
+    day: s.day ?? "",
+    burstLeft: s.burstLeft ?? 0,
+    blockedUntil: s.blockedUntil ?? 0,
+    lastLog: s.lastLog ?? [],
+  };
+}
+
+async function log(message, level = "info") {
+  const { lastLog } = await state();
+  const line = { at: new Date().toISOString(), level, message };
+  const next = [line, ...lastLog].slice(0, 60);
+  await chrome.storage.local.set({ lastLog: next });
+  console.log(`[warmr] ${message}`);
+}
+
+function today() {
+  return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
+}
+
+/** True when the account is inside its waking window. Handles wrap past midnight. */
+function awake(cfg) {
+  const hour = new Date().getHours();
+  const { wakeHour: start, sleepHour: end } = cfg;
+  if (start === end) return true;
+  if (start < end) return hour >= start && hour < end;
+  return hour >= start || hour < end;
+}
+
+// --- server ---------------------------------------------------------------
+
+async function api(cfg, path, body) {
+  const response = await fetch(`${cfg.apiBase.replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${path} -> ${response.status} ${text.slice(0, 120)}`);
+  }
+  return response.json();
+}
+
+// --- cookies --------------------------------------------------------------
+
+/**
+ * Read this profile's Instagram cookies and push them to the server.
+ *
+ * `chrome.cookies` sees httpOnly cookies, which page JavaScript cannot - that
+ * includes `sessionid` and `datr`, the two that matter most.
+ */
+async function refreshCookies(reason = "scheduled") {
+  const cfg = await config();
+  if (!cfg.apiBase || !cfg.token) {
+    await log("cookie refresh skipped: extension not configured yet", "warn");
+    return { ok: false, error: "not configured" };
+  }
+
+  const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
+  const jar = {};
+  for (const cookie of all) {
+    if (COOKIE_NAMES.includes(cookie.name)) jar[cookie.name] = cookie.value;
+  }
+
+  if (!jar.sessionid) {
+    await log("no sessionid in this profile - is it logged into Instagram?", "error");
+    return { ok: false, error: "not logged in" };
+  }
+
+  const username = cfg.session || (await detectUsername()) || "";
+  if (!username) {
+    await log("cannot determine the Instagram username for this profile", "error");
+    return { ok: false, error: "unknown username" };
+  }
+
+  try {
+    const result = await api(cfg, "/api/extension-cookies", {
+      username,
+      cookies: jar,
+      user_agent: navigator.userAgent,
+    });
+    await chrome.storage.local.set({ session: username, lastCookieSync: Date.now() });
+    await log(
+      `cookies refreshed for ${username} (${reason})${
+        result.missing?.length ? `, missing: ${result.missing.join(", ")}` : ""
+      }`,
+    );
+    return { ok: true, username };
+  } catch (error) {
+    await log(`cookie refresh failed: ${error.message}`, "error");
+    return { ok: false, error: error.message };
+  }
+}
+
+/** Ask an Instagram tab who is logged in, opening one briefly if needed. */
+async function detectUsername() {
+  const existing = await chrome.tabs.query({ url: "https://www.instagram.com/*" });
+  for (const tab of existing) {
+    try {
+      const res = await chrome.tabs.sendMessage(tab.id, { type: "WHOAMI" });
+      if (res?.username) return res.username;
+    } catch {
+      // no content script in that tab; try the next
+    }
+  }
+
+  const tab = await chrome.tabs.create({
+    url: "https://www.instagram.com/",
+    active: false,
+  });
+  try {
+    await waitForLoad(tab.id);
+    await sleep(1500);
+    const res = await chrome.tabs.sendMessage(tab.id, { type: "WHOAMI" });
+    return res?.username ?? null;
+  } catch {
+    return null;
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+function waitForLoad(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("tab load timed out"));
+    }, timeoutMs);
+    function listener(id, info) {
+      if (id === tabId && info.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// --- following ------------------------------------------------------------
+
+/** Open one profile, click Follow, close the tab, report the outcome. */
+async function followOne(cfg, target) {
+  const tab = await chrome.tabs.create({ url: target.url, active: false });
+  let result = { outcome: "failed", detail: "tab never loaded" };
+
+  try {
+    await waitForLoad(tab.id);
+    // Let the profile header render, and look less like an instant machine.
+    await sleep(rand(1200, 3000));
+    result = await chrome.tabs.sendMessage(tab.id, { type: "FOLLOW_CURRENT" });
+  } catch (error) {
+    result = { outcome: "failed", detail: String(error.message ?? error).slice(0, 200) };
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+
+  try {
+    await api(cfg, "/api/follow-result", {
+      session: cfg.session,
+      target_id: target.id,
+      username: target.username,
+      outcome: result.outcome,
+      detail: result.detail ?? null,
+    });
+  } catch (error) {
+    await log(`could not report ${target.username}: ${error.message}`, "error");
+  }
+
+  return result;
+}
+
+/**
+ * One tick: follow at most one account, then schedule the next tick.
+ *
+ * Deliberately one-at-a-time. The alarm carries the rhythm, so a crash or a
+ * browser restart loses at most one follow and never double-follows.
+ */
+async function tick() {
+  const cfg = await config();
+  if (!cfg.enabled) return;
+  if (!cfg.apiBase || !cfg.token) {
+    await log("not configured - open the popup and set the server and token", "warn");
+    return;
+  }
+
+  const st = await state();
+
+  // An action block stops writes for a day or two. Reads are unaffected, and
+  // the collector keeps working - stopping those too would cost stories for a
+  // problem that only concerns writes.
+  if (Date.now() < st.blockedUntil) {
+    const hours = Math.round((st.blockedUntil - Date.now()) / 3600000);
+    await log(`resting after a block, ~${hours}h left`);
+    return scheduleNext(rand(30, 60));
+  }
+
+  if (!awake(cfg)) {
+    await log("outside waking hours - sleeping");
+    return scheduleNext(rand(20, 45));
+  }
+
+  // Roll the day over.
+  let doneToday = st.doneToday;
+  if (st.day !== today()) {
+    doneToday = 0;
+    await chrome.storage.local.set({ day: today(), doneToday: 0 });
+  }
+
+  if (cfg.dailyLimit > 0 && doneToday >= cfg.dailyLimit) {
+    await log(`daily limit reached (${doneToday}/${cfg.dailyLimit})`);
+    return scheduleNext(rand(30, 60));
+  }
+
+  // Refill the queue from the server when it runs dry.
+  let queue = st.queue;
+  if (queue.length === 0) {
+    try {
+      const data = await api(cfg, "/api/follow-queue", {
+        session: cfg.session,
+        limit: 10,
+      });
+      queue = data.targets ?? [];
+      await chrome.storage.local.set({ queue });
+      await log(`claimed ${queue.length} targets`);
+    } catch (error) {
+      await log(`could not claim targets: ${error.message}`, "error");
+      return scheduleNext(rand(5, 15));
+    }
+    if (queue.length === 0) {
+      await log("nothing free to claim right now");
+      return scheduleNext(rand(15, 40));
+    }
+  }
+
+  const target = queue[0];
+  const result = await followOne(cfg, target);
+
+  await chrome.storage.local.set({ queue: queue.slice(1) });
+
+  if (result.outcome === "following" || result.outcome === "requested") {
+    doneToday += 1;
+    await chrome.storage.local.set({ doneToday, day: today() });
+    await log(`followed ${target.username} (${doneToday} today)`);
+  } else if (result.outcome === "blocked") {
+    // Give the whole queue back and stand down for a day or two.
+    const until = Date.now() + rand(24, 48) * 3600 * 1000;
+    await chrome.storage.local.set({ blockedUntil: until, queue: [] });
+    for (const item of queue.slice(1)) {
+      await api(cfg, "/api/follow-result", {
+        session: cfg.session,
+        target_id: item.id,
+        username: item.username,
+        outcome: "throttled",
+        detail: "released after action block",
+      }).catch(() => {});
+    }
+    await log(`ACTION BLOCK on ${target.username} - pausing follows`, "error");
+    return scheduleNext(rand(60, 120));
+  } else {
+    await log(`${target.username}: ${result.outcome} (${result.detail ?? ""})`, "warn");
+  }
+
+  // Burst rhythm: a few follows close together, then the phone goes away.
+  let burstLeft = st.burstLeft;
+  if (burstLeft <= 0) {
+    burstLeft = Math.floor(rand(cfg.burstMin, cfg.burstMax + 1));
+  }
+  burstLeft -= 1;
+  await chrome.storage.local.set({ burstLeft });
+
+  const delayMin =
+    burstLeft > 0
+      ? rand(cfg.gapMinSec, cfg.gapMaxSec) / 60
+      : rand(cfg.restMinMin, cfg.restMaxMin);
+  return scheduleNext(delayMin);
+}
+
+function scheduleNext(minutes) {
+  // Chrome clamps alarms to a 30s floor; keep well above it.
+  return chrome.alarms.create(ALARM_FOLLOW, {
+    delayInMinutes: Math.max(0.6, minutes),
+  });
+}
+
+// --- wiring ---------------------------------------------------------------
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === ALARM_FOLLOW) await tick();
+  if (alarm.name === ALARM_COOKIES) await refreshCookies("scheduled");
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  (async () => {
+    if (message?.type === "REFRESH_COOKIES") {
+      sendResponse(await refreshCookies("manual"));
+    } else if (message?.type === "START") {
+      await chrome.storage.local.set({ enabled: true, blockedUntil: 0 });
+      await applySchedules();
+      await log("started");
+      await tick();
+      sendResponse({ ok: true });
+    } else if (message?.type === "STOP") {
+      await chrome.storage.local.set({ enabled: false });
+      await chrome.alarms.clear(ALARM_FOLLOW);
+      await log("stopped");
+      sendResponse({ ok: true });
+    } else if (message?.type === "STATUS") {
+      const cfg = await config();
+      const st = await state();
+      const { lastCookieSync } = await chrome.storage.local.get("lastCookieSync");
+      sendResponse({ cfg, st, lastCookieSync: lastCookieSync ?? null });
+    } else if (message?.type === "SAVE_CONFIG") {
+      await chrome.storage.local.set(message.config);
+      await applySchedules();
+      sendResponse({ ok: true });
+    } else {
+      sendResponse({ ok: false, error: "unknown message" });
+    }
+  })();
+  return true;
+});
+
+async function applySchedules() {
+  const cfg = await config();
+  const hours = Math.min(Math.max(Number(cfg.cookieHours) || 6, 2), 12);
+  await chrome.alarms.clear(ALARM_COOKIES);
+  chrome.alarms.create(ALARM_COOKIES, {
+    delayInMinutes: 1,
+    periodInMinutes: hours * 60,
+  });
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await applySchedules();
+  await log("installed");
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await applySchedules();
+  const cfg = await config();
+  if (cfg.enabled) await tick();
+});

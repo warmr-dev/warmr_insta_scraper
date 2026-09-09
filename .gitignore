@@ -60,3 +60,8 @@ downloaded_stories/
 *.xlsx
 *.xlsm
 estimation/*.csv
+
+# Saved Instagram pages. A logged-in snapshot embeds fb_dtsg/lsd tokens and the
+# viewer's own account data - never commit one.
+Instagram.html
+*.instagram.html
