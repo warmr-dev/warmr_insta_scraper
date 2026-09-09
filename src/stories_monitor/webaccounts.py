@@ -159,7 +159,14 @@ def clear_cookies(username: str) -> bool:
 
 
 def mark_failed(username: str, error: str) -> None:
-    """Пометить куки нерабочими - видно в Supabase, какие пора обновить."""
+    """Mark the cookies as broken - Supabase then shows which need refreshing.
+
+    Also hands this session's follow assignments back to the pool. A session is
+    declared dead here no matter which worker noticed (the collector on a read,
+    the follower on a write), so this is the one chokepoint where the targets it
+    was holding become available to the surviving sessions - which is what keeps
+    collection uninterrupted rather than quietly losing those accounts.
+    """
     from sqlalchemy import update as sa_update
 
     try:
@@ -173,6 +180,15 @@ def mark_failed(username: str, error: str) -> None:
         log.warning("mark_failed_failed", username=username, error=str(exc)[:120])
         return
     log.warning("web_cookies_marked_failed", username=username, error=error[:120])
+
+    try:
+        from .follow_assign import reap_session
+
+        freed = reap_session(username, reason=f"session marked failed: {error}"[:200])
+        if freed:
+            log.info("dead_session_follows_freed", username=username, freed=freed)
+    except Exception as exc:  # noqa: BLE001 - freeing must never mask the failure
+        log.warning("reap_on_mark_failed_failed", username=username, error=str(exc)[:120])
 
 
 def save_following(username: str, pairs: list[tuple[int, str]]) -> None:
