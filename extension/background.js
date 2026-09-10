@@ -284,6 +284,33 @@ async function currentSession(cfg) {
  * owner of each target, and therefore what lets a dead profile's targets be
  * reclaimed by the others.
  */
+/**
+ * Runs INSIDE an Instagram tab and returns the viewer's username.
+ *
+ * Anchored on the account id wherever possible, because the first bare
+ * "username" in a profile page belongs to the profile being viewed, not the
+ * viewer - the mistake that made this report a stranger's handle. The second
+ * pattern is the shape the viewer's own block takes, verified against a saved
+ * logged-in page.
+ */
+function extractViewerUsername(ownId) {
+  const html = document.documentElement.innerHTML;
+  const patterns = [];
+  if (ownId) {
+    patterns.push(
+      new RegExp(
+        '"id"\\s*:\\s*"' + ownId + '"[^{}]{0,4000}?"username"\\s*:\\s*"([A-Za-z0-9._]{1,30})"',
+      ),
+    );
+  }
+  patterns.push(/"username"\s*:\s*"([A-Za-z0-9._]{1,30})"\s*,\s*"is_supervised_user"/);
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 async function detectUsername() {
   const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
   const dsUserId = all.find((c) => c.name === "ds_user_id")?.value;
@@ -322,13 +349,23 @@ async function detectUsername() {
   }
 
   // Ask a tab that is already open - still no new window for the operator.
+  //
+  // `scripting.executeScript` rather than sendMessage: a tab loaded before the
+  // extension was installed has no content script in it, and messaging such a
+  // tab throws. Injecting works regardless, which matters most on a fresh
+  // install - exactly when there is an Instagram tab open and no listener in
+  // it.
   const existing = await chrome.tabs.query({ url: "https://www.instagram.com/*" });
   for (const tab of existing) {
     try {
-      const res = await chrome.tabs.sendMessage(tab.id, { type: "WHOAMI" });
-      if (res?.username) return res.username;
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        args: [dsUserId ?? ""],
+        func: extractViewerUsername,
+      });
+      if (result?.result) return result.result;
     } catch {
-      // No content script in that tab (it loaded before the extension did).
+      // Tab closed mid-query, or not scriptable. Try the next.
     }
   }
 
@@ -341,8 +378,12 @@ async function detectUsername() {
   try {
     await waitForLoad(tab.id);
     await sleep(1500);
-    const res = await chrome.tabs.sendMessage(tab.id, { type: "WHOAMI" });
-    return res?.username ?? null;
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [dsUserId ?? ""],
+      func: extractViewerUsername,
+    });
+    return result?.result ?? null;
   } catch {
     return null;
   } finally {
