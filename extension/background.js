@@ -29,7 +29,10 @@ const DEFAULTS = {
   session: "",
   enabled: false,
   // How many follows per day. 0 means unlimited - the rhythm still paces it.
-  dailyLimit: 0,
+  dailyLimit: 120,
+  // A daily cap alone still permits 120 follows in two hours, which is the
+  // shape that got throttled. An hourly ceiling is what actually spreads them.
+  hourlyLimit: 25,
   // Minutes between cookie refreshes. The popup constrains this to 2-12 hours.
   cookieHours: 6,
   // Seconds between follows inside one burst.
@@ -40,6 +43,10 @@ const DEFAULTS = {
   burstMax: 5,
   restMinMin: 25,
   restMaxMin: 90,
+  // Instagram's informal ceiling is around 150-200 follows a day and roughly 60
+  // an hour, and this account was rate-limited after sustaining ~55/hour for
+  // nine hours (426 in a day). A daily cap is therefore on by default rather
+  // than opt-in: unlimited is a setting to choose deliberately, not to inherit.
   // Local hours the account is "awake", in 24-hour form; the popup shows them
   // as AM/PM. Following at 4am every night is a tell.
   //
@@ -83,6 +90,8 @@ async function state() {
     "burstLeft",
     "blockedUntil",
     "lastLog",
+    "hourStamp",
+    "doneThisHour",
   ]);
   return {
     queue: s.queue ?? [],
@@ -91,6 +100,8 @@ async function state() {
     burstLeft: s.burstLeft ?? 0,
     blockedUntil: s.blockedUntil ?? 0,
     lastLog: s.lastLog ?? [],
+    hourStamp: s.hourStamp ?? "",
+    doneThisHour: s.doneThisHour ?? 0,
   };
 }
 
@@ -297,13 +308,10 @@ function waitForLoad(tabId, timeoutMs = 30000) {
 
 /** Open one profile, click Follow, close the tab, report the outcome. */
 async function followOne(cfg, target) {
-  // Flag it before the tab opens, so the dashboard shows what this profile is
-  // touching right now rather than only after the fact. Best-effort: a status
-  // flag is never worth losing a follow over.
-  await rpc(cfg, "ext_begin_check", {
-    p_session: cfg.session,
-    p_target: Number(target.id),
-  }).catch(() => {});
+  // `ext_begin_check` used to run here to light up "checking now" on the
+  // dashboard. Removed: it is a round trip per follow for a flag that is stale
+  // within seconds, and the outcome report a moment later carries the same
+  // information. Fewer moving parts per follow is the point of this pass.
 
   const tab = await chrome.tabs.create({ url: target.url, active: false });
   let result = { outcome: "failed", detail: "tab never loaded" };
@@ -394,6 +402,19 @@ async function tick() {
     return scheduleNext(rand(30, 60));
   }
 
+  // Hourly ceiling. Sustained ~55/hour is what got this account throttled, so
+  // the cap is on the rate rather than only on the daily total.
+  const hourNow = new Date().toISOString().slice(0, 13);
+  let doneThisHour = st.hourStamp === hourNow ? st.doneThisHour : 0;
+  if (st.hourStamp !== hourNow) {
+    await chrome.storage.local.set({ hourStamp: hourNow, doneThisHour: 0 });
+  }
+  if (cfg.hourlyLimit > 0 && doneThisHour >= cfg.hourlyLimit) {
+    const minutesLeft = 60 - new Date().getMinutes();
+    await log(`hourly limit reached (${doneThisHour}/${cfg.hourlyLimit}) - waiting ${minutesLeft}m`);
+    return scheduleNext(minutesLeft + rand(1, 5));
+  }
+
   // Refill the queue from the server when it runs dry.
   let queue = st.queue;
   if (queue.length === 0) {
@@ -425,8 +446,26 @@ async function tick() {
 
   if (result.outcome === "following" || result.outcome === "requested") {
     doneToday += 1;
-    await chrome.storage.local.set({ doneToday, day: today() });
+    await chrome.storage.local.set({
+      doneToday,
+      day: today(),
+      hourStamp: hourNow,
+      doneThisHour: doneThisHour + 1,
+    });
     await log(`followed ${target.username} (${doneToday} today)`);
+  } else if (result.outcome === "throttled") {
+    // Instagram rate-limited the confirmation, which means this session is
+    // going too fast. Back off for a while rather than pressing on into a
+    // block, and give the target back untouched.
+    await rpc(cfg, "ext_report_follow", {
+      p_session: cfg.session,
+      p_target: Number(target.id),
+      p_username: target.username,
+      p_outcome: "throttled",
+      p_detail: result.detail ?? "rate limited",
+    }).catch(() => {});
+    await log(`rate limited on ${target.username} - backing off`, "warn");
+    return scheduleNext(rand(20, 45));
   } else if (result.outcome === "blocked") {
     // Give the whole queue back and stand down for a day or two.
     const until = Date.now() + rand(24, 48) * 3600 * 1000;

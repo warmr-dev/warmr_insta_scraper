@@ -152,7 +152,12 @@ async function doFollow() {
   // 15s rather than 8s because the state can lag on a slow connection, and the
   // cost of waiting is one slow follow while the cost of giving up early is a
   // wrong record that sends another session to follow the same account again.
-  const deadline = Date.now() + 15000;
+  // Check the DOM briefly, then ask the API. The DOM was the primary signal
+  // and it was wrong at scale: 62 accounts recorded as "failed" turned out to
+  // be followed, because Instagram re-renders the header and the poll can miss
+  // the changed label entirely. The API is authoritative, so it now runs after
+  // a short DOM window rather than only as a last resort 15 seconds later.
+  const deadline = Date.now() + 4000;
   let sawTransient = false;
 
   while (Date.now() < deadline) {
@@ -180,17 +185,18 @@ async function doFollow() {
     }
   }
 
-  // Last resort: ask Instagram directly rather than trusting the DOM. The click
-  // may well have worked - reporting `failed` releases the target and sends
-  // another session to follow an account we already follow.
+  // The DOM did not say. Ask Instagram, which does know.
   const confirmed = await confirmViaApi();
   if (confirmed) return confirmed;
 
+  // `confirmViaApi` returns "throttled" when Instagram rate-limits the check.
+  // That is a session problem, not a target problem, and must not burn the
+  // target's retry budget - so it is reported separately from a real failure.
   return {
     outcome: "failed",
     detail: sawTransient
-      ? "button still read Follow after 15s"
-      : "state did not change after click",
+      ? "button still read Follow, and the API did not confirm"
+      : "no state change and the API did not confirm",
   };
 }
 
@@ -215,6 +221,12 @@ async function confirmViaApi() {
       headers: { "X-IG-App-ID": "936619743392459" },
       credentials: "include",
     });
+    // A throttled check says nothing about the follow, but it does say this
+    // session needs to slow down - and treating it as a failed follow would
+    // release a target that is very likely already followed.
+    if (response.status === 429) {
+      return { outcome: "throttled", detail: "rate limited while confirming" };
+    }
     if (!response.ok) return null;
 
     const data = await response.json();

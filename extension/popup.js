@@ -6,6 +6,7 @@ const FIELDS = [
   "session",
   "cookieHours",
   "dailyLimit",
+  "hourlyLimit",
   "gapMinSec",
   "gapMaxSec",
   "restMinMin",
@@ -20,6 +21,7 @@ const HOUR_FIELDS = ["wakeHour", "sleepHour"];
 const NUMERIC = new Set([
   "cookieHours",
   "dailyLimit",
+  "hourlyLimit",
   "gapMinSec",
   "gapMaxSec",
   "restMinMin",
