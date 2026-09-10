@@ -633,13 +633,37 @@ async function tick() {
     return scheduleNext(rand(0.05, 0.2));
   }
 
-  // Last line of defence against a stale queue: never act on a target this
-  // profile has already followed in this run. The queue is persisted, so a
-  // reload or a lost pop could otherwise replay an entry - which is exactly
-  // what followed one account fourteen times.
+  // Never act on a queued target without confirming the claim still stands.
+  //
+  // The queue lives in chrome.storage and survives reloads and upgrades, so it
+  // can outlive the claim behind it: the row may have been released, reclaimed
+  // by another session, or already followed. Local guards cannot see any of
+  // that, and a queue written before those guards existed carries no owner at
+  // all - which is how one account was followed twenty-one times from a batch
+  // the database had long since freed. The database is the only thing that
+  // knows, so ask it.
   const { doneIds = [] } = await chrome.storage.local.get("doneIds");
   if (doneIds.includes(String(target.id))) {
     await log(`skipping ${target.username} - already followed by this profile`, "warn");
+    return scheduleNext(rand(0.05, 0.2));
+  }
+
+  let stillOurs = false;
+  try {
+    stillOurs = Boolean(
+      await rpc(cfg, "ext_owns_target", {
+        p_session: cfg.session,
+        p_target: Number(target.id),
+      }),
+    );
+  } catch (error) {
+    // Cannot verify: skip rather than risk a repeat. The target stays claimed
+    // and the stale-claim sweep will free it if this profile never returns.
+    await log(`could not verify ${target.username}: ${error.message}`, "warn");
+    return scheduleNext(rand(0.2, 0.5));
+  }
+  if (!stillOurs) {
+    await log(`skipping ${target.username} - no longer claimed by this profile`, "warn");
     return scheduleNext(rand(0.05, 0.2));
   }
 
@@ -908,9 +932,15 @@ async function applySchedules() {
   });
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   await applySchedules();
-  await log("installed");
+  // A queue carried across an update may name targets this profile no longer
+  // owns, and the version that produced it had no ownership check. Cheaper to
+  // re-claim than to reason about what is still valid in it.
+  if (details.reason === "update" || details.reason === "install") {
+    await chrome.storage.local.set({ queue: [], queueOwner: null, doneIds: [] });
+  }
+  await log(`extension ${details.reason ?? "loaded"} - queue reset`);
 });
 
 chrome.runtime.onStartup.addListener(async () => {
