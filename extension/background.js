@@ -191,7 +191,7 @@ async function refreshCookies(reason = "scheduled") {
     return { ok: false, error: "not logged in" };
   }
 
-  const username = cfg.session || (await detectUsername()) || "";
+  const username = (await currentSession(cfg)) || "";
   if (!username) {
     await log("cannot determine the Instagram username for this profile", "error");
     return { ok: false, error: "unknown username" };
@@ -221,6 +221,40 @@ async function refreshCookies(reason = "scheduled") {
     await log(`cookie refresh failed: ${error.message}`, "error");
     return { ok: false, error: error.message };
   }
+}
+
+/**
+ * The account this profile is logged into RIGHT NOW, checked against cookies.
+ *
+ * `cfg.session` is a cache, not the truth. A profile that is logged out and
+ * into a different account keeps the old name otherwise, and then claims
+ * targets as account A while following them from account B - so the follows
+ * land on the wrong account and reclaim can never free them, because the
+ * session it names is not the one doing the work.
+ *
+ * The cookie carries `ds_user_id`, so the check is free: compare it to the id
+ * behind the cached name only when the cached name is missing or the id moved.
+ */
+async function currentSession(cfg) {
+  const all = await chrome.cookies.getAll({ domain: ".instagram.com" });
+  const dsUserId = all.find((c) => c.name === "ds_user_id")?.value;
+  const { sessionUserId } = await chrome.storage.local.get("sessionUserId");
+
+  if (cfg.session && dsUserId && sessionUserId === dsUserId) {
+    return cfg.session; // cache still matches this profile
+  }
+
+  const username = await detectUsername();
+  if (username) {
+    if (cfg.session && username !== cfg.session) {
+      await log(
+        `this profile is now ${username}, was ${cfg.session} - switching`,
+        "warn",
+      );
+    }
+    await chrome.storage.local.set({ session: username, sessionUserId: dsUserId ?? null });
+  }
+  return username;
 }
 
 /**
@@ -358,6 +392,15 @@ async function tick() {
     await log("not configured - open the popup and set the Supabase URL and key", "warn");
     return;
   }
+
+  // Re-check which account this profile is on before doing anything with its
+  // name: claiming as the wrong session is worse than not claiming at all.
+  const session = await currentSession(cfg);
+  if (!session) {
+    await log("no Instagram account detected in this profile - is it logged in?", "error");
+    return scheduleNext(rand(10, 20));
+  }
+  cfg.session = session;
 
   const st = await state();
 
@@ -637,7 +680,7 @@ async function testConnection() {
     return { ok: false, error: "URL or key is empty" };
   }
 
-  const username = cfg.session || (await detectUsername()) || "";
+  const username = (await currentSession(cfg)) || "";
   if (!username) {
     // By this point the cookie lookup, an open tab and a fresh tab have all
     // failed, which almost always means the profile is not logged in.
