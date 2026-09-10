@@ -427,7 +427,25 @@ async function followOne(cfg, target) {
     // of each follow, and the content script polls for the button anyway.
     const settleMax = Math.min(3000, Math.max(400, cfg.gapMinSec * 25));
     await sleep(rand(Math.min(400, settleMax), settleMax));
-    result = await chrome.tabs.sendMessage(tab.id, { type: "FOLLOW_CURRENT" });
+    try {
+      result = await chrome.tabs.sendMessage(tab.id, { type: "FOLLOW_CURRENT" });
+    } catch (messageError) {
+      // "Receiving end does not exist": the content script is not in this tab.
+      // It happens on the first tab after an install or reload, before Chrome
+      // has injected declared scripts. Inject it and ask once more, rather than
+      // reporting a failure for a follow that was never attempted.
+      if (!/Receiving end does not exist|Could not establish connection/i.test(
+        String(messageError.message ?? messageError),
+      )) {
+        throw messageError;
+      }
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+      await sleep(400);
+      result = await chrome.tabs.sendMessage(tab.id, { type: "FOLLOW_CURRENT" });
+    }
   } catch (error) {
     result = { outcome: "failed", detail: String(error.message ?? error).slice(0, 200) };
   } finally {
@@ -443,10 +461,47 @@ async function followOne(cfg, target) {
       p_detail: result.detail ?? null,
     });
   } catch (error) {
+    // The follow may well have landed; only the report failed. Leaving it here
+    // means the row stays `claimed` forever - never retried, never reclaimed,
+    // and invisible. Queue it so a later tick can report it once the network is
+    // back, and let the stale-claim sweep catch it if this profile never runs
+    // again.
     await log(`could not report ${target.username}: ${error.message}`, "error");
+    const { pendingReports = [] } = await chrome.storage.local.get("pendingReports");
+    pendingReports.push({
+      target_id: target.id,
+      username: target.username,
+      outcome: result.outcome,
+      detail: result.detail ?? null,
+    });
+    await chrome.storage.local.set({ pendingReports: pendingReports.slice(-200) });
   }
 
   return result;
+}
+
+/** Flush outcomes whose report failed earlier, oldest first. */
+async function flushPendingReports(cfg) {
+  const { pendingReports = [] } = await chrome.storage.local.get("pendingReports");
+  if (pendingReports.length === 0) return;
+
+  const remaining = [];
+  for (const item of pendingReports) {
+    try {
+      await rpc(cfg, "ext_report_follow", {
+        p_session: cfg.session,
+        p_target: Number(item.target_id),
+        p_username: item.username,
+        p_outcome: item.outcome,
+        p_detail: item.detail,
+      });
+    } catch {
+      remaining.push(item); // still unreachable; keep it for next time
+    }
+  }
+  await chrome.storage.local.set({ pendingReports: remaining });
+  const sent = pendingReports.length - remaining.length;
+  if (sent > 0) await log(`reported ${sent} outcome(s) held from earlier`);
 }
 
 /**
@@ -471,6 +526,8 @@ async function tick() {
     return scheduleNext(rand(10, 20));
   }
   cfg.session = session;
+
+  await flushPendingReports(cfg);
 
   const st = await state();
 
@@ -555,9 +612,29 @@ async function tick() {
   }
 
   const target = queue[0];
+  // Remove it from the queue BEFORE acting. A previous version of this line was
+  // lost in a later edit, and the result was the same target followed fourteen
+  // times: every failure path returns early without ever shortening the queue,
+  // so `queue[0]` stayed the same account forever.
+  queue = queue.slice(1);
+  await chrome.storage.local.set({ queue });
+
+  // Last line of defence against a stale queue: never act on a target this
+  // profile has already followed in this run. The queue is persisted, so a
+  // reload or a lost pop could otherwise replay an entry - which is exactly
+  // what followed one account fourteen times.
+  const { doneIds = [] } = await chrome.storage.local.get("doneIds");
+  if (doneIds.includes(String(target.id))) {
+    await log(`skipping ${target.username} - already followed by this profile`, "warn");
+    return scheduleNext(rand(0.05, 0.2));
+  }
+
   const result = await followOne(cfg, target);
 
   if (result.outcome === "following" || result.outcome === "requested") {
+    const { doneIds: seen = [] } = await chrome.storage.local.get("doneIds");
+    seen.push(String(target.id));
+    await chrome.storage.local.set({ doneIds: seen.slice(-500) });
     doneToday += 1;
     await chrome.storage.local.set({
       doneToday,
