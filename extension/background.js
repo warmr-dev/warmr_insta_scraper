@@ -599,7 +599,7 @@ async function tick() {
         is_private: r.is_private,
         url: `https://www.instagram.com/${r.username}/`,
       }));
-      await chrome.storage.local.set({ queue });
+      await chrome.storage.local.set({ queue, queueOwner: cfg.session });
       await log(`claimed ${queue.length} targets`);
     } catch (error) {
       await log(`could not claim targets: ${error.message}`, "error");
@@ -618,6 +618,20 @@ async function tick() {
   // so `queue[0]` stayed the same account forever.
   queue = queue.slice(1);
   await chrome.storage.local.set({ queue });
+
+  // The queue belongs to the session that claimed it. If this profile is now a
+  // different account - relogin, or settings copied from another profile - the
+  // queued targets are owned by someone else in the database, and acting on
+  // them would report follows under the wrong session. Drop the queue instead.
+  const { queueOwner } = await chrome.storage.local.get("queueOwner");
+  if (queueOwner && queueOwner !== cfg.session) {
+    await log(
+      `queue belonged to ${queueOwner}, this profile is ${cfg.session} - discarding it`,
+      "warn",
+    );
+    await chrome.storage.local.set({ queue: [], queueOwner: cfg.session, doneIds: [] });
+    return scheduleNext(rand(0.05, 0.2));
+  }
 
   // Last line of defence against a stale queue: never act on a target this
   // profile has already followed in this run. The queue is persisted, so a
