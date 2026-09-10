@@ -253,8 +253,20 @@ async function currentSession(cfg) {
       );
     }
     await chrome.storage.local.set({ session: username, sessionUserId: dsUserId ?? null });
+    return username;
   }
-  return username;
+
+  // Detection failed - usually a 429 while resolving the id, not a logged-out
+  // profile. A name typed under Settings is a deliberate answer to exactly this
+  // question, so use it rather than refusing to start. Binding it to the
+  // current ds_user_id means the profile-switch check still works afterwards.
+  if (cfg.session) {
+    await log(`could not verify the account; using ${cfg.session} from Settings`, "warn");
+    await chrome.storage.local.set({ sessionUserId: dsUserId ?? null });
+    return cfg.session;
+  }
+
+  return null;
 }
 
 /**
@@ -277,18 +289,35 @@ async function detectUsername() {
   const dsUserId = all.find((c) => c.name === "ds_user_id")?.value;
 
   if (dsUserId) {
-    try {
-      const response = await fetch(
-        `https://i.instagram.com/api/v1/users/${dsUserId}/info/`,
-        { headers: { "User-Agent": "Instagram 302.0.0.23.114 Android" } },
-      );
-      if (response.ok) {
+    // Two endpoints, because either can be throttled on its own and a 429 here
+    // used to look like "not logged in". The second is the one the website
+    // itself calls, so it answers whenever the session works at all.
+    const lookups = [
+      {
+        url: `https://i.instagram.com/api/v1/users/${dsUserId}/info/`,
+        headers: { "User-Agent": "Instagram 302.0.0.23.114 Android" },
+        pick: (d) => d?.user?.username,
+      },
+      {
+        url: "https://www.instagram.com/api/v1/accounts/current_user/",
+        headers: { "X-IG-App-ID": "936619743392459" },
+        pick: (d) => d?.user?.username,
+      },
+    ];
+
+    for (const lookup of lookups) {
+      try {
+        const response = await fetch(lookup.url, {
+          headers: lookup.headers,
+          credentials: "include",
+        });
+        if (!response.ok) continue;
         const data = await response.json();
-        const username = data?.user?.username;
+        const username = lookup.pick(data);
         if (username) return username;
+      } catch {
+        // Offline, throttled, or declined - try the next.
       }
-    } catch {
-      // Offline, or Instagram declined. Fall through to the tab methods.
     }
   }
 
@@ -689,7 +718,8 @@ async function testConnection() {
     return {
       ok: false,
       error: hasSession
-        ? "logged in, but the username could not be read - type it under Settings"
+        ? "logged in, but Instagram would not confirm which account (likely rate " +
+          "limited) - type the username under Settings and save again"
         : "this Chrome profile is not logged into Instagram - log in, then try again",
     };
   }
